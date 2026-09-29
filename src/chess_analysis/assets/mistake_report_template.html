@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mistake patterns — {{username}}</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 1100px; color: #222; }
+  h1 { font-size: 1.6rem; } h2 { font-size: 1.25rem; margin-top: 2rem; border-bottom: 2px solid #ddd; padding-bottom: .3rem;}
+  h3 { font-size: 1.05rem; }
+  .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+  .card { background: #fafafa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 1rem; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1.5rem; }
+  th, td { border: 1px solid #ddd; padding: .35rem .6rem; text-align: left; font-size: .9rem; }
+  th { background: #f0f0f0; }
+  .filters { display: flex; gap: 1.5rem; align-items: center; background: #eef; padding: .7rem 1rem; border-radius: 8px; margin: 1rem 0; flex-wrap: wrap;}
+  .filters label { font-size: .85rem; }
+  .example { display: inline-block; margin: .5rem .8rem .5rem 0; text-align: center; vertical-align: top; }
+  .example .meta { font-size: .75rem; max-width: 240px; }
+  .examples { display: flex; flex-wrap: wrap; }
+  .theme-block { border: 1px solid #ddd; border-radius: 8px; padding: .8rem 1rem; margin: .8rem 0; background: #fff; }
+  .muted { color: #777; font-size: .85rem; }
+  .none { color: #999; font-style: italic; }
+</style>
+<script>{{chartjs}}</script>
+</head>
+<body>
+<h1>Mistake patterns — {{username}}</h1>
+<p class="muted">Generated {{generated_at}} · offline report · {{n_games}} analyzed games, {{n_blunders}} mistakes/blunders (mine only)</p>
+
+<div class="filters">
+  <strong>Filters:</strong>
+  <label>Color <select id="f-color"><option value="">both</option><option value="white">white</option><option value="black">black</option></select></label>
+  <label>Time class <select id="f-tc"><option value="">all</option><option value="rapid">rapid</option><option value="blitz">blitz</option><option value="bullet">bullet</option><option value="daily">daily</option></select></label>
+</div>
+
+<h2>When do I blunder?</h2>
+<div class="chart-grid">
+  <div class="card"><h3>Mistakes by phase</h3><canvas id="c-phase"></canvas></div>
+  <div class="card"><h3>Mistakes by move number (10-move buckets)</h3><canvas id="c-moves"></canvas></div>
+  <div class="card"><h3>Mistakes per 1000 moves, by time class</h3><canvas id="c-tc"></canvas></div>
+  <div class="card"><h3>Mistakes by color</h3><canvas id="c-color"></canvas></div>
+  <div class="card"><h3>Mistakes by my rating bracket</h3><canvas id="c-rating"></canvas></div>
+  <div class="card"><h3>vs. opponent strength</h3><canvas id="c-opp"></canvas></div>
+  <div class="card"><h3>Time trouble (mistakes with low clock vs. plenty of time)</h3><canvas id="c-clock"></canvas></div>
+  <div class="card"><h3>Eval swing: one-move catastrophe vs. smaller error</h3><canvas id="c-drops"></canvas></div>
+</div>
+
+<h2>Accuracy trend over time</h2>
+<div class="chart-grid">
+  <div class="card"><h3>My accuracy per game, by time class</h3><canvas id="c-trend"></canvas></div>
+</div>
+
+<h2>What kinds of mistakes dominate? (motifs)</h2>
+<table id="t-motifs"><thead><tr><th>Motif</th><th>Count</th><th>Top examples (position before the mistake)</th></tr></thead><tbody></tbody></table>
+
+<h2>Recurring themes</h2>
+<p class="muted">Top recurring combinations of motif &times; position type &times; phase &times; material. Label them by editing the <code>pattern_labels</code> table — the report improves over time.</p>
+<div id="themes"></div>
+
+<script>
+const DATA = {{data_json}};
+const TT = DATA.time_trouble_s;
+function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+function escAttr(s) { return esc(s).replace(/"/g, '&quot;'); }
+function safeLink(link, label) {
+  if (link && /^https?:\/\//.test(link)) {
+    return '<a href="' + escAttr(link) + '" target="_blank">' + esc(label) + '</a>';
+  }
+  return esc(label);
+}
+function destroyCharts() { Object.values(Chart.instances).forEach(c => c.destroy()); }
+
+function filtered() {
+  const color = document.getElementById('f-color').value;
+  const tc = document.getElementById('f-tc').value;
+  return DATA.blunders.filter(b => (!color || b.color === color) && (!tc || b.time_class === tc));
+}
+
+function bar(canvas, labels, values) {
+  const ctx = document.getElementById(canvas);
+  if (!ctx) return;
+  if (!labels.length) { ctx.parentElement.insertAdjacentHTML('beforeend', '<p class="none msg">no data for this filter</p>'); return; }
+  new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{ data: values, backgroundColor: '#4a7fb5' }] },
+    options: { plugins: { legend: { display: false } }, responsive: true }
+  });
+}
+
+function exampleHtml(e) {
+  return '<div class="example">' + (e.diagram || '') +
+    '<div class="meta">' + esc(e.classification) + ' ' + esc(e.san) +
+    ' (−' + esc(e.drop) + ' win%) ply ' + esc(e.ply) + '<br>' +
+    safeLink(e.link, e.game_uuid.slice(0, 8)) + ' ' + esc(e.month || '') + '</div></div>';
+}
+
+function render() {
+  destroyCharts();
+  document.querySelectorAll('p.msg').forEach(p => p.remove());
+  const b = filtered();
+  const color = document.getElementById('f-color').value;
+  const count = (keyFn) => {
+    const m = {};
+    b.forEach(x => { const k = keyFn(x); m[k] = (m[k] || 0) + 1; });
+    return m;
+  };
+  // phase (chronological order)
+  const ph = count(x => (x.ply <= 20) ? 'opening' : (x.ply <= 60) ? 'middlegame' : 'endgame');
+  bar('c-phase', ['opening', 'middlegame', 'endgame'], ['opening', 'middlegame', 'endgame'].map(k => ph[k] || 0));
+  // move buckets (numeric order)
+  const mb = count(x => Math.floor((x.ply - 1) / 10));
+  const mbKeys = Object.keys(mb).map(Number).sort((a, c) => a - c);
+  bar('c-moves', mbKeys.map(k => (k * 10 + 1) + '-' + (k * 10 + 10)), mbKeys.map(k => mb[k]));
+  // time class normalized per move played (mistakes per 1000 moves)
+  const tcSet = [...new Set(b.map(x => x.time_class))].sort();
+  bar('c-tc', tcSet, tcSet.map(tc => {
+    const mistakes = b.filter(x => x.time_class === tc).length;
+    const moves = Object.entries(DATA.moves_by_color_tc)
+      .filter(([k]) => k.split('|')[1] === tc && (!color || k.split('|')[0] === color))
+      .reduce((a, [, v]) => a + v, 0);
+    return moves ? +(1000.0 * mistakes / moves).toFixed(1) : 0;
+  }));
+  // color
+  const col = count(x => x.color);
+  bar('c-color', ['white', 'black'], ['white', 'black'].map(k => col[k] || 0));
+  // rating bracket (numeric order)
+  const rb = count(x => x.rating_bracket);
+  const rbKeys = Object.keys(rb).filter(k => k !== 'unknown').sort();
+  if (rb['unknown']) rbKeys.push('unknown');
+  bar('c-rating', rbKeys, rbKeys.map(k => rb[k]));
+  // opponent strength
+  const os = count(x => (x.opponent_rating == null || x.rating == null) ? 'unknown rating'
+    : (x.opponent_rating > x.rating) ? 'stronger opponent' : 'weaker/equal opponent');
+  bar('c-opp', ['stronger opponent', 'weaker/equal opponent', 'unknown rating'],
+      ['stronger opponent', 'weaker/equal opponent', 'unknown rating'].map(k => os[k] || 0));
+  // time trouble
+  const tt = count(x => {
+    const c = x.meta && x.meta.clock_s;
+    return (c == null) ? 'no clock data' : (c <= TT ? 'low clock (≤' + TT + 's)' : 'plenty of time');
+  });
+  bar('c-clock', ['low clock (≤' + TT + 's)', 'plenty of time', 'no clock data'],
+      ['low clock (≤' + TT + 's)', 'plenty of time', 'no clock data'].map(k => tt[k] || 0));
+  // drop type
+  const dr = count(x => (x.drop >= 20) ? 'one-move catastrophe (≥20 win%)' : 'smaller error (<20 win%)');
+  bar('c-drops', ['one-move catastrophe (≥20 win%)', 'smaller error (<20 win%)'],
+      ['one-move catastrophe (≥20 win%)', 'smaller error (<20 win%)'].map(k => dr[k] || 0));
+  // accuracy trend (filtered by color and time class, like every other view)
+  const tr = document.getElementById('c-trend');
+  if (tr) {
+    const tcSel = document.getElementById('f-tc').value;
+    const games = DATA.games.filter(g => (!color || g.color === color)
+      && (!tcSel || g.time_class === tcSel) && g.accuracy != null);
+    const byTc = {};
+    games.forEach(g => { (byTc[g.time_class] = byTc[g.time_class] || []).push(g); });
+    const ds = Object.keys(byTc).sort().map((tc, i) => ({
+      label: tc,
+      data: byTc[tc].sort((a, c) => a.end_time - c.end_time).map(g => ({x: g.end_time, y: g.accuracy})),
+      borderColor: ['#4a7fb5', '#c25b4a', '#5aa469', '#9b5ab0'][i % 4],
+      pointRadius: 2,
+      showLine: true
+    }));
+    if (!ds.length) { tr.parentElement.insertAdjacentHTML('beforeend', '<p class="none msg">no data for this filter</p>'); }
+    else new Chart(tr, {
+      type: 'scatter',
+      data: { datasets: ds },
+      options: {
+        scales: { x: { type: 'linear', ticks: { callback: v => new Date(v * 1000).toISOString().slice(0, 7) } } },
+        responsive: true
+      }
+    });
+  }
+  // motif table with examples
+  const tbody = document.querySelector('#t-motifs tbody');
+  tbody.innerHTML = '';
+  const motifs = {};
+  b.forEach(x => { ((x.meta || {}).motifs || []).forEach(m => { (motifs[m] = motifs[m] || []).push(x); }); });
+  const motifRows = Object.entries(motifs).sort((a, c) => c[1].length - a[1].length);
+  if (!motifRows.length) tbody.insertAdjacentHTML('beforeend', '<tr><td colspan="3" class="none">no mistakes match the current filters</td></tr>');
+  for (const [motif, list] of motifRows) {
+    const examples = (DATA.motif_examples[motif] || [])
+      .filter(e => (!color || e.color === color) && (!document.getElementById('f-tc').value || e.time_class === document.getElementById('f-tc').value))
+      .slice(0, 3)
+      .map(exampleHtml).join('');
+    tbody.insertAdjacentHTML('beforeend',
+      '<tr><td>' + esc(motif) + '</td><td>' + list.length + '</td><td><div class="examples">' +
+      (examples || '<span class="none">no examples for this filter</span>') + '</div></td></tr>');
+  }
+  // themes (filtered by color and time class)
+  const themeDiv = document.getElementById('themes');
+  themeDiv.innerHTML = '';
+  const tcSel = document.getElementById('f-tc').value;
+  const visible = DATA.themes
+    .map(t => ({ ...t, examples: t.examples.filter(e => (!color || e.color === color) && (!tcSel || e.time_class === tcSel)) }))
+    .filter(t => t.count >= 3 && t.examples.length > 0)
+    .slice(0, 15);
+  if (!visible.length) themeDiv.insertAdjacentHTML('beforeend', '<p class="none">no recurring themes for this filter</p>');
+  for (const t of visible) {
+    themeDiv.insertAdjacentHTML('beforeend',
+      '<div class="theme-block"><h3>' + esc(t.label || t.motif) +
+      ' <span class="muted">(' + esc(t.motif) + ' · ' + esc(t.position) + ' · ' + esc(t.phase) + ' · material ' + esc(t.material) + ')</span></h3>' +
+      '<p>' + t.examples.length + ' matching example(s) shown · ' + t.count + ' occurrences overall (unfiltered)</p>' +
+      '<div class="examples">' + t.examples.slice(0, 4).map(exampleHtml).join('') + '</div></div>');  }
+}
+
+document.getElementById('f-color').addEventListener('change', render);
+document.getElementById('f-tc').addEventListener('change', render);
+// time-class options derived from the data
+(function() {
+  const sel = document.getElementById('f-tc');
+  [...new Set(DATA.blunders.concat(DATA.games).map(x => x.time_class))].filter(Boolean).sort().forEach(tc => {
+    sel.insertAdjacentHTML('beforeend', '<option value="' + escAttr(tc) + '">' + esc(tc) + '</option>');
+  });
+})();
+render();
+</script>
+</body>
+</html>

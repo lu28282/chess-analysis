@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mistake insights — chess-analysis</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0 auto; padding: 1.2rem; max-width: 1150px; color: #222; }
+  header { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: .8rem; }
+  header h1 { font-size: 1.4rem; margin: 0; }
+  header a { color: #4a7fb5; }
+  .muted { color: #777; font-size: .85rem; }
+  h2 { font-size: 1.2rem; margin-top: 2rem; border-bottom: 2px solid #ddd; padding-bottom: .3rem; }
+  .filters { display: flex; gap: 1.5rem; align-items: center; background: #eef; padding: .7rem 1rem;
+             border-radius: 8px; margin: 1rem 0; flex-wrap: wrap; }
+  .filters label { font-size: .85rem; }
+  .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+  .card { background: #fafafa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 1rem; }
+  .card h3 { font-size: 1rem; margin: 0 0 .4rem; }
+  .motif-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 1rem;
+                margin: .8rem 0; }
+  .motif-card h3 { margin: 0; font-size: 1.05rem; }
+  .motif-card .count { color: #c25b4a; font-weight: 700; }
+  .examples { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .7rem; }
+  .mini { text-decoration: none; color: inherit; display: inline-block; }
+  .mini:hover .mini-board { outline: 3px solid #4a7fb5; outline-offset: 2px; }
+  .mini-board { position: relative; display: grid; grid-template-columns: repeat(8, 1fr);
+                grid-template-rows: repeat(8, 1fr); width: 190px; height: 190px;
+                border: 2px solid #333; }
+  .mini-board .sq { position: relative; display: flex; align-items: center; justify-content: center;
+                    font-size: 21px; }
+  .mini-board .sq.light { background: #f0d9b5; } .mini-board .sq.dark { background: #b58863; }
+  .mini-board .piece.w { color: #fafafa; text-shadow: 0 0 2px #000, 0 1px 2px rgba(0,0,0,.8); }
+  .mini-board .piece.b { color: #1c1c1c; text-shadow: 0 0 2px rgba(255,255,255,.4); }
+  .mini-board .sq.blunder::before { content: ''; position: absolute; top: 8%; right: 8%;
+    width: 24%; height: 24%; border-radius: 50%; background: #fa412d; z-index: 3;
+    box-shadow: 0 0 4px rgba(0,0,0,.5); }
+  .mini-board svg { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+  .mini .meta { font-size: .75rem; color: #555; max-width: 195px; margin-top: .25rem; }
+  .cls-blunder { color: #fa412d; font-weight: 700; }
+  .cls-mistake { color: #ff8e3c; font-weight: 700; }
+  .cls-inaccuracy { color: #c9a227; font-weight: 700; }
+  .theme-block { border: 1px solid #ddd; border-radius: 8px; padding: .8rem 1rem; margin: .8rem 0; background: #fff; }
+  .theme-block h3 { margin: 0 0 .2rem; font-size: 1.02rem; }
+  .theme-desc { color: #555; font-size: .9rem; }
+  .label-row { display: flex; gap: .4rem; margin: .6rem 0 .2rem; }
+  .label-row input { flex: 0 1 340px; padding: .3rem .5rem; border: 1px solid #ccc; border-radius: 6px; }
+  .label-row button { padding: .3rem .8rem; border: 1px solid #ccc; border-radius: 6px; background: #fafafa; cursor: pointer; }
+  .label-row button:hover { background: #eef; }
+  .none { color: #999; font-style: italic; }
+  .empty { color: #999; font-style: italic; padding: 1rem; }
+</style>
+<script>{{chartjs}}</script>
+</head>
+<body>
+<header>
+  <h1>Mistake insights</h1>
+  <a href="/">&larr; pipeline</a>
+  <a href="/viewer">&#9822; game viewer</a>
+  <a href="/openings">&#128018; opening blunders</a>
+  <span class="muted" id="summary"></span>
+</header>
+
+<div class="filters">
+  <strong>Filters:</strong>
+  <label>Color <select id="f-color"><option value="">both</option><option value="white">white</option><option value="black">black</option></select></label>
+  <label>Time class <select id="f-tc"><option value="">all</option></select></label>
+</div>
+
+<h2>When do you blunder?</h2>
+<div class="chart-grid">
+  <div class="card"><h3>By game phase</h3><canvas id="c-phase"></canvas></div>
+  <div class="card"><h3>By move number (10-move blocks)</h3><canvas id="c-moves"></canvas></div>
+  <div class="card"><h3>Per 1000 moves, by time class</h3><canvas id="c-tc"></canvas></div>
+  <div class="card"><h3>By your color</h3><canvas id="c-color"></canvas></div>
+  <div class="card"><h3>By your rating</h3><canvas id="c-rating"></canvas></div>
+  <div class="card"><h3>vs. opponent strength</h3><canvas id="c-opp"></canvas></div>
+  <div class="card"><h3>Time on the clock</h3><canvas id="c-clock"></canvas></div>
+  <div class="card"><h3>Size of the error</h3><canvas id="c-drops"></canvas></div>
+  <div class="card"><h3>Accuracy per game over time</h3><canvas id="c-trend"></canvas></div>
+</div>
+
+<h2>What kinds of mistakes do you make?</h2>
+<p class="muted">Click any board to open the game at that moment — with an explanation in plain words and Stockfish's best move.</p>
+<div id="motifs"></div>
+
+<h2>Your recurring patterns</h2>
+<p class="muted">Combinations of mistake type &times; game phase &times; position style that show up repeatedly. Name them so you recognize them in future games.</p>
+<div id="themes"></div>
+
+<script>
+'use strict';
+const GLYPHS = { k: '\u265A', q: '\u265B', r: '\u265C', b: '\u265D', n: '\u265E', p: '\u265F' };
+const CLS_CLASS = { blunder: 'cls-blunder', mistake: 'cls-mistake', inaccuracy: 'cls-inaccuracy' };
+const MOTIF_TEXT = {
+  hanging_piece: 'You left a piece hanging where it could be captured',
+  missed_fork: 'You missed a fork — one piece attacking two at once',
+  pin_created: 'Your piece got pinned and couldn\u2019t move',
+  skewer_available: 'The opponent could win material with a skewer',
+  fork_available_opponent: 'You allowed a fork of two of your pieces',
+  king_safety: 'Your king came under attack',
+  back_rank: 'Back-rank danger — your king got trapped on the last rank',
+  pawn_concession: 'You weakened your pawn structure (doubled or isolated pawns)',
+  endgame_technique: 'Endgame precision was needed here',
+  timeout_adjacent: 'You blundered with almost no time left on the clock',
+  uncategorized: 'Other mistakes',
+};
+const FILES = 'abcdefgh';
+let DATA = null;   // /api/mistakes payload
+let GAMES = [];    // /api/games payload (accuracy trend)
+
+function esc(s) { const d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+function escAttr(s) { return esc(s).replace(/"/g, '&quot;'); }
+function phaseOf(ply) { return ply <= 20 ? 'opening' : ply <= 60 ? 'middlegame' : 'endgame'; }
+
+function filtered() {
+  const color = document.getElementById('f-color').value;
+  const tc = document.getElementById('f-tc').value;
+  return DATA.mistakes.filter(m => (!color || m.side === color) && (!tc || m.time_class === tc));
+}
+
+// ---- mini board: renders the position BEFORE the mistake, red dot on the
+// blundered-to square, gray arrow for the move you played; whole board is a
+// link into the game viewer at that moment ----
+function miniBoardHtml(m) {
+  const rows = (m.fen_before || '').split(' ')[0].split('/');
+  const bottomBlack = m.side === 'black';
+  let squares = '';
+  if (rows.length === 8) {
+    const grid = rows.map(r => [...r]);  // per-rank char list from rank 8 down
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        const file = bottomBlack ? 7 - col : col;
+        const rank = bottomBlack ? row : 7 - row;  // rank index 0..7 (rank1..rank8)
+        const rankFromTop = 7 - rank;
+        const cells = grid[rankFromTop] || [];
+        let piece = null, idx = 0;
+        for (const ch of cells) {
+          if (/\d/.test(ch)) idx += +ch;
+          else { if (idx === file) { piece = ch; break; } idx++; }
+        }
+        const name = FILES[file] + (rank + 1);
+        const light = (file + rank) % 2 === 1;
+        const to = m.uci.slice(2, 4);
+        squares += '<div class="sq ' + (light ? 'light' : 'dark') + (name === to ? ' blunder' : '') + '">' +
+          (piece ? '<span class="piece ' + (piece === piece.toUpperCase() ? 'w' : 'b') + '">' +
+            GLYPHS[piece.toLowerCase()] + '</span>' : '') + '</div>';
+      }
+    }
+  }
+  const arrow = m.uci.length >= 4 && m.fen_before ? arrowSvg(m.uci, bottomBlack) : '';
+  const cls = CLS_CLASS[m.classification] || '';
+  return '<a class="mini" href="/viewer?game=' + escAttr(m.game_uuid) + '&ply=' + m.ply + '">' +
+    '<div class="mini-board">' + squares + arrow + '</div>' +
+    '<div class="meta"><span class="' + cls + '">' + esc(m.classification) + '</span> · ' +
+    esc(m.time_class) + ' · ' + esc(m.month || '') +
+    (m.clock_s != null ? ' · &#9201; ' + Math.floor(m.clock_s / 60) + ':' + String(Math.round(m.clock_s) % 60).padStart(2, '0') : '') +
+    '</div></a>';
+}
+
+function arrowSvg(uci, bottomBlack) {
+  const from = uci.slice(0, 2), to = uci.slice(2, 4);
+  const pt = sq => {
+    const file = FILES.indexOf(sq[0]), rank = +sq[1] - 1;
+    const x = bottomBlack ? 7 - file : file;
+    const y = bottomBlack ? rank : 7 - rank;
+    return [x + 0.5, y + 0.5];
+  };
+  const [x1, y1] = pt(from), [x2, y2] = pt(to);
+  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
+  if (!len) return '';
+  const ux = dx / len, uy = dy / len, px = -uy, py = ux;
+  const sx = x1 + ux * .28, sy = y1 + uy * .28, hx = x2 - ux * .42, hy = y2 - uy * .42, w = .24;
+  return '<svg viewBox="0 0 8 8" preserveAspectRatio="none">' +
+    '<line x1="' + sx + '" y1="' + sy + '" x2="' + hx + '" y2="' + hy +
+    '" stroke="#7a7a7a" stroke-width="0.18" stroke-linecap="round" opacity="0.8"/>' +
+    '<polygon points="' + x2 + ',' + y2 + ' ' + (hx + px * w) + ',' + (hy + py * w) + ' ' +
+    (hx - px * w) + ',' + (hy - py * w) + '" fill="#7a7a7a" opacity="0.8"/></svg>';
+}
+
+// ---- charts ----
+function destroyCharts() { Object.values(Chart.instances).forEach(c => c.destroy()); }
+
+function bar(canvas, labels, values) {
+  const el = document.getElementById(canvas);
+  if (!el) return;
+  el.parentElement.querySelectorAll('p.none').forEach(p => p.remove());
+  if (!labels.length) { el.parentElement.insertAdjacentHTML('beforeend', '<p class="none">no data for this filter</p>'); return; }
+  new Chart(el, {
+    type: 'bar',
+    data: { labels, datasets: [{ data: values, backgroundColor: '#4a7fb5' }] },
+    options: { plugins: { legend: { display: false } }, responsive: true }
+  });
+}
+
+function renderCharts(b) {
+  const color = document.getElementById('f-color').value;
+  const count = keyFn => {
+    const m = {};
+    b.forEach(x => { const k = keyFn(x); m[k] = (m[k] || 0) + 1; });
+    return m;
+  };
+  destroyCharts();
+  const ph = count(x => phaseOf(x.ply));
+  bar('c-phase', ['opening', 'middlegame', 'endgame'], ['opening', 'middlegame', 'endgame'].map(k => ph[k] || 0));
+  const mb = count(x => Math.floor((x.ply - 1) / 10));
+  const mbKeys = Object.keys(mb).map(Number).sort((a, c) => a - c);
+  bar('c-moves', mbKeys.map(k => (k * 10 + 1) + '\u2013' + (k * 10 + 10)), mbKeys.map(k => mb[k]));
+  const tcSel = document.getElementById('f-tc').value;
+  const tcSet = [...new Set(b.map(x => x.time_class))].filter(Boolean).sort();
+  bar('c-tc', tcSet, tcSet.map(tc => {
+    const mistakes = b.filter(x => x.time_class === tc).length;
+    const moves = Object.entries(DATA.moves_by_color_tc)
+      .filter(([k]) => k.split('|')[1] === tc && (!color || k.split('|')[0] === color))
+      .reduce((a, [, v]) => a + v, 0);
+    return moves ? +(1000 * mistakes / moves).toFixed(1) : 0;
+  }));
+  const col = count(x => x.side);
+  bar('c-color', ['white', 'black'], ['white', 'black'].map(k => col[k] || 0));
+  const rb = count(x => x.rating == null ? 'unknown' : String((Math.floor(x.rating / 200) * 200)));
+  const rbKeys = Object.keys(rb).filter(k => k !== 'unknown').map(Number).sort((a, c) => a - c);
+  if (rb['unknown']) rbKeys.push('unknown');
+  bar('c-rating', rbKeys.map(String), rbKeys.map(k => rb[String(k)] || 0));
+  const os = count(x => (x.opponent_rating == null || x.rating == null) ? 'unknown rating'
+    : (x.opponent_rating > x.rating) ? 'stronger opponent' : 'weaker/equal opponent');
+  bar('c-opp', ['stronger opponent', 'weaker/equal opponent', 'unknown rating'],
+      ['stronger opponent', 'weaker/equal opponent', 'unknown rating'].map(k => os[k] || 0));
+  const TT = DATA.time_trouble_s;
+  const tt = count(x => x.clock_s == null ? 'no clock data' : (x.clock_s <= TT ? 'low clock' : 'enough time'));
+  bar('c-clock', ['low clock', 'enough time', 'no clock data'],
+      ['low clock', 'enough time', 'no clock data'].map(k => tt[k] || 0));
+  const dr = count(x => x.drop >= 20 ? 'one-move catastrophe' : 'smaller error');
+  bar('c-drops', ['one-move catastrophe', 'smaller error'],
+      ['one-move catastrophe', 'smaller error'].map(k => dr[k] || 0));
+  // accuracy trend
+  const tr = document.getElementById('c-trend');
+  tr.parentElement.querySelectorAll('p.none').forEach(p => p.remove());
+  const games = GAMES.filter(g => (!color || g.color === color) && (!tcSel || g.time_class === tcSel) && g.accuracy != null);
+  const byTc = {};
+  games.forEach(g => { (byTc[g.time_class] = byTc[g.time_class] || []).push(g); });
+  const ds = Object.keys(byTc).sort().map((tc, i) => ({
+    label: tc,
+    data: byTc[tc].sort((a, c) => a.end_time - c.end_time).map(g => ({ x: g.end_time, y: g.accuracy })),
+    borderColor: ['#4a7fb5', '#c25b4a', '#5aa469', '#9b5ab0'][i % 4],
+    pointRadius: 2, showLine: true
+  }));
+  if (!ds.length) tr.parentElement.insertAdjacentHTML('beforeend', '<p class="none">no data for this filter</p>');
+  else new Chart(tr, {
+    type: 'scatter',
+    data: { datasets: ds },
+    options: {
+      scales: { x: { type: 'linear', ticks: { callback: v => new Date(v * 1000).toISOString().slice(0, 7) } } },
+      responsive: true
+    }
+  });
+}
+
+// ---- motif cards + recurring patterns ----
+function renderMotifs(b) {
+  const el = document.getElementById('motifs');
+  el.innerHTML = '';
+  const byMotif = {};
+  b.forEach(m => (m.motifs.length ? m.motifs : ['uncategorized'])
+    .forEach(mo => (byMotif[mo] = byMotif[mo] || []).push(m)));
+  const rows = Object.entries(byMotif).sort((a, c) => c[1].length - a[1].length);
+  if (!rows.length) { el.innerHTML = '<p class="none">no mistakes match the current filters — nice!</p>'; return; }
+  for (const [motif, list] of rows) {
+    const examples = [...list].sort((a, c) => c.drop - a.drop).slice(0, 4).map(miniBoardHtml).join('');
+    el.insertAdjacentHTML('beforeend',
+      '<div class="motif-card"><h3>' + esc(MOTIF_TEXT[motif] || motif) +
+      ' <span class="count">' + list.length + '&times;</span></h3>' +
+      '<div class="examples">' + examples + '</div></div>');
+  }
+}
+
+function themeKey(m, motif) {
+  return JSON.stringify([motif, m.position_type || '?', phaseOf(m.ply),
+    m.material_balance > 0 ? 'ahead' : 'behind/equal']);
+}
+
+function renderThemes(b) {
+  const el = document.getElementById('themes');
+  el.innerHTML = '';
+  const themes = {};
+  b.forEach(m => (m.motifs.length ? m.motifs : ['uncategorized']).forEach(mo => {
+    const k = themeKey(m, mo);
+    (themes[k] = themes[k] || []).push(m);
+  }));
+  const rows = Object.entries(themes).filter(([, list]) => list.length >= 3)
+    .sort((a, c) => c[1].length - a[1].length).slice(0, 15);
+  if (!rows.length) { el.innerHTML = '<p class="none">no recurring pattern with 3+ occurrences for this filter yet — analyze more games.</p>'; return; }
+  for (const [key, list] of rows) {
+    const [motif, position, phase, material] = JSON.parse(key);
+    const label = DATA.labels[key] || '';
+    const desc = esc(MOTIF_TEXT[motif] || motif) + ' — in the ' + esc(phase) + ' of ' +
+      esc(position) + ' positions, when ' +
+      (material === 'ahead' ? 'you were ahead in material' : 'material was equal or you were behind');
+    const examples = [...list].sort((a, c) => c.drop - a.drop).slice(0, 3).map(miniBoardHtml).join('');
+    el.insertAdjacentHTML('beforeend',
+      '<div class="theme-block" data-key="' + escAttr(key) + '">' +
+      '<h3>' + (label ? esc(label) + ' <span class="muted">(' + list.length + '&times;)</span>' : esc(desc) +
+        ' <span class="muted">(' + list.length + '&times;)</span>') + '</h3>' +
+      (label ? '<div class="theme-desc">' + desc + '</div>' : '') +
+      '<div class="label-row"><input placeholder="name this pattern (e.g. \u201changing pieces in time trouble\u201d)" maxlength="300">' +
+      '<button>save name</button></div>' +
+      '<div class="examples">' + examples + '</div></div>');
+  }
+  el.querySelectorAll('.theme-block').forEach(block => {
+    const input = block.querySelector('input');
+    const btn = block.querySelector('button');
+    const key = block.dataset.key;
+    input.value = DATA.labels[key] || '';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const resp = await fetch('/api/theme-label', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key, label: input.value.trim() })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          if (data.label) DATA.labels[key] = data.label; else delete DATA.labels[key];
+          renderThemes(filtered());
+        } else alert(data.error);
+      } catch (err) { alert('save failed: ' + err.message); }
+      btn.disabled = false;
+    });
+  });
+}
+
+function render() {
+  const b = filtered();
+  document.getElementById('summary').textContent =
+    b.length + ' mistakes/blunders across ' + new Set(b.map(m => m.game_uuid)).size + ' games (yours only)';
+  renderCharts(b);
+  renderMotifs(b);
+  renderThemes(b);
+}
+
+async function init() {
+  [DATA, GAMES] = await Promise.all([
+    (await fetch('/api/mistakes')).json(),
+    (await fetch('/api/games')).json()
+  ]);
+  const tcSel = document.getElementById('f-tc');
+  [...new Set(DATA.mistakes.map(m => m.time_class).concat(GAMES.map(g => g.time_class)))]
+    .filter(Boolean).sort().forEach(tc =>
+      tcSel.insertAdjacentHTML('beforeend', '<option value="' + escAttr(tc) + '">' + esc(tc) + '</option>'));
+  document.getElementById('f-color').addEventListener('change', render);
+  tcSel.addEventListener('change', render);
+  if (!DATA.mistakes.length) {
+    document.getElementById('summary').textContent = 'no analyzed games yet';
+    document.getElementById('motifs').innerHTML = '<p class="empty">run <b>analyze</b> on the pipeline page first</p>';
+    return;
+  }
+  render();
+}
+init();
+</script>
+</body>
+</html>

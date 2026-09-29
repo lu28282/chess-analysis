@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Game viewer — chess-analysis</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; color: #222; }
+  header { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  header h1 { font-size: 1.3rem; margin: 0; }
+  header a { color: #4a7fb5; }
+  #game-title { font-size: .95rem; color: #555; }
+
+  #layout { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
+  aside { flex: 0 0 280px; max-width: 280px; }
+  #center { flex: 1 1 340px; min-width: 320px; max-width: 640px; }
+  #moves-wrap { flex: 0 0 300px; max-width: 300px; max-height: 80vh; display: flex; flex-direction: column; }
+
+  .game-controls { display: flex; flex-direction: column; gap: .4rem; margin-bottom: .6rem; font-size: .85rem; }
+  .game-controls select { padding: .25rem; }
+  #games-list { max-height: 75vh; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 8px; }
+  .g { padding: .5rem .7rem; border-bottom: 1px solid #eee; cursor: pointer; font-size: .85rem; }
+  .g:hover { background: #f4f8ff; }
+  .g.active { background: #e8f0fe; border-left: 3px solid #4a7fb5; }
+  .g .row1 { display: flex; justify-content: space-between; gap: .5rem; }
+  .g .opp { font-weight: 600; }
+  .res-W { color: #2a7a2a; font-weight: 700; } .res-L { color: #b03030; font-weight: 700; } .res-D { color: #777; font-weight: 700; }
+  .g .row2 { display: flex; gap: .8rem; color: #777; font-size: .78rem; margin-top: .15rem; }
+  .g .row2 b.m { color: #c25b4a; }
+
+  #board-area { display: flex; gap: .5rem; align-items: stretch; }
+  #eval-bar { flex: 0 0 14px; position: relative; border: 1px solid #999; border-radius: 3px;
+              background: linear-gradient(#3a3a3a,#3a3a3a); overflow: hidden; }
+  #eval-fill { position: absolute; bottom: 0; left: 0; right: 0; background: #f4f4f4; transition: height .15s; }
+  #board-frame { position: relative; flex: 1; display: flex; }
+  #board { flex: 1; display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+           aspect-ratio: 1; container-type: inline-size; border: 2px solid #333; user-select: none; touch-action: manipulation; }
+  #arrows { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+  .sq { position: relative; display: flex; align-items: center; justify-content: center; }
+  .sq.light { background: #f0d9b5; } .sq.dark { background: #b58863; }
+  .piece { font-size: 9.2cqw; line-height: 1; cursor: grab; }
+  .piece.w { color: #fafafa; text-shadow: 0 0 2px #000, 0 1px 2px rgba(0,0,0,.8); }
+  .piece.b { color: #1c1c1c; text-shadow: 0 0 2px rgba(255,255,255,.4); }
+  .coord { position: absolute; font-size: 2.4cqw; color: rgba(0,0,0,.55); font-weight: 700; pointer-events: none; }
+  .coord.rank { top: 1%; left: 4%; } .sq.dark .coord { color: rgba(255,255,255,.7); }
+  .coord.file { bottom: 1%; right: 5%; }
+  .sq.last::after { content: ''; position: absolute; inset: 0; background: rgba(255, 215, 0, .35); }
+  .sq.sel::after { content: ''; position: absolute; inset: 0; background: rgba(80, 140, 220, .45); }
+  .sq.check { background: radial-gradient(circle, #d64545 30%, #b58863 100%) !important; }
+  .sq.target::before { content: ''; position: absolute; width: 30%; height: 30%; border-radius: 50%; background: rgba(30,30,30,.35); z-index: 2; }
+  .sq.target.capture::before { width: 88%; height: 88%; border-radius: 50%; background: none; border: 5px solid rgba(200,40,40,.55); box-sizing: border-box; }
+  .sq.blunder::before { content: ''; position: absolute; top: 6%; right: 6%; width: 22%; height: 22%; border-radius: 50%; background: #fa412d; z-index: 3; box-shadow: 0 0 4px rgba(0,0,0,.5); }
+
+  #controls { display: flex; gap: .4rem; align-items: center; margin-top: .6rem; }
+  #controls button, #mistake-nav button, #variation button { padding: .35rem .6rem; border: 1px solid #ccc; border-radius: 6px;
+      background: #fafafa; cursor: pointer; font-size: .95rem; }
+  #controls button:hover, #mistake-nav button:hover, #variation button:hover { background: #eef; }
+  #slider { flex: 1; }
+  #mistake-nav { display: flex; gap: .4rem; margin-top: .4rem; flex-wrap: wrap; }
+  #mistake-nav button { font-size: .85rem; }
+  #b-ask-sf { background: #e7f2e2 !important; border-color: #81b64c !important; font-weight: 600; }
+  #b-ask-sf:disabled { background: #f0f0f0 !important; color: #888; cursor: wait; }
+
+  #sf-result { margin-top: .8rem; border: 1px solid #b7d4a6; background: #f2f8ec; border-radius: 8px;
+               padding: .7rem .9rem; font-size: .92rem; }
+  #sf-result .sf-head { font-weight: 700; }
+  #sf-result .sf-move { font-size: 1.25rem; font-weight: 700; color: #3a6b1f; margin: .25rem 0 .1rem; }
+  #sf-result .sf-eval { font-weight: 600; }
+  #sf-result .sf-alts { margin-top: .3rem; color: #555; font-size: .85rem; }
+  #sf-result .sf-pv { margin-top: .35rem; color: #777; font-size: .85rem; }
+  #sf-result .sf-engine { color: #999; font-size: .75rem; margin-top: .35rem; }
+  #sf-result.err { border-color: #d8a3a3; background: #f9ecec; }
+
+  #panel { margin-top: .8rem; border: 1px solid #e0e0e0; border-radius: 8px; padding: .7rem .9rem; background: #fafafa; min-height: 4.2em; font-size: .92rem; }
+  #panel .cls-word { font-weight: 700; }
+  #panel .cls-note { margin-top: .2rem; }
+  #panel .motifs { margin-top: .35rem; padding-left: 1.1rem; }
+  #panel .motifs li { margin: .1rem 0; }
+  #panel .muted { color: #777; font-size: .85rem; margin-top: .35rem; }
+
+  #variation { margin-top: .6rem; border: 1px solid #c9b458; background: #fffbe8; border-radius: 8px; padding: .6rem .9rem; }
+  #variation .var-head { font-weight: 600; font-size: .9rem; }
+  #variation .var-moves { margin: .3rem 0; font-size: .95rem; }
+  #variation .hint { color: #777; font-size: .8rem; }
+
+  #players { border-bottom: 2px solid #ddd; padding-bottom: .4rem; margin-bottom: .4rem; font-size: .88rem; }
+  #players .p { display: flex; justify-content: space-between; margin: .15rem 0; }
+  #players .me { font-weight: 700; }
+  #players a { color: #4a7fb5; font-size: .8rem; }
+  #move-list { overflow-y: auto; flex: 1; font-size: .95rem; }
+  .mrow { display: grid; grid-template-columns: 2.6em 1fr 1fr; align-items: center; border-radius: 4px; }
+  .mrow:nth-child(odd) { background: #f6f6f6; }
+  .mnum { color: #999; font-size: .8em; padding-left: .4em; }
+  .mv { padding: .22rem .45rem; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: .35rem; }
+  .mv:hover { background: #e8f0fe; }
+  .mv.current { background: #d8e6fa; font-weight: 700; }
+  .dot { width: .6em; height: .6em; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+  .dot.brilliant { background: #26bfa5; } .dot.best { background: #81b64c; } .dot.good { background: #a8c46a; }
+  .dot.inaccuracy { background: #f7c631; } .dot.mistake { background: #ff8e3c; } .dot.blunder { background: #fa412d; }
+  #legend { display: flex; gap: .9rem; flex-wrap: wrap; margin-top: .5rem; font-size: .72rem; color: #666; }
+  #legend span { display: inline-flex; align-items: center; gap: .3rem; }
+  .empty { color: #999; font-style: italic; padding: 1rem; }
+  @media (max-width: 900px) { aside { max-width: 45%; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Game viewer</h1>
+  <a href="/">&larr; pipeline</a>
+  <a href="/insights">&#128202; mistake insights</a>
+  <a href="/openings">&#128018; opening blunders</a>
+  <span id="game-title"></span>
+</header>
+
+<div id="layout">
+  <aside>
+    <div class="game-controls">
+      <select id="sort">
+        <option value="date">newest first</option>
+        <option value="mistakes">most mistakes</option>
+        <option value="accuracy">worst accuracy</option>
+      </select>
+      <label><input type="checkbox" id="only-mistakes"> only games with my mistakes</label>
+    </div>
+    <div id="games-list"><p class="empty">loading…</p></div>
+  </aside>
+
+  <main id="center">
+    <div id="board-area">
+      <div id="eval-bar" title="white's advantage"><div id="eval-fill"></div></div>
+      <div id="board-frame">
+        <div id="board"></div>
+        <svg id="arrows" viewBox="0 0 8 8" preserveAspectRatio="none"></svg>
+      </div>
+    </div>
+    <div id="controls">
+      <button id="b-first" title="start">&#124;&#9664;</button>
+      <button id="b-prev" title="previous move">&#9664;</button>
+      <input type="range" id="slider" min="0" max="0" value="0">
+      <button id="b-next" title="next move">&#9654;</button>
+      <button id="b-last" title="end">&#9654;&#124;</button>
+      <button id="b-flip" title="flip board">&#8645;</button>
+    </div>
+    <div id="mistake-nav">
+      <button id="b-mprev">&#8592; previous mistake</button>
+      <button id="b-mnext">next mistake &#8594;</button>
+      <button id="b-ask-sf" title="what should be played in the shown position?">&#9822; Ask Stockfish</button>
+    </div>
+    <div id="sf-result" hidden></div>
+    <div id="variation" hidden>
+      <div class="var-head">Your line <span class="hint">(pieces move freely here; the game resumes when you go back)</span></div>
+      <div class="var-moves" id="var-moves"></div>
+      <button id="b-var-undo">undo</button>
+      <button id="b-var-back">back to game</button>
+    </div>
+    <div id="panel"></div>
+    <div id="legend">
+      <span><i class="dot brilliant"></i>brilliant</span>
+      <span><i class="dot best"></i>best</span>
+      <span><i class="dot good"></i>good</span>
+      <span><i class="dot inaccuracy"></i>inaccuracy</span>
+      <span><i class="dot mistake"></i>mistake</span>
+      <span><i class="dot blunder"></i>blunder</span>
+    </div>
+  </main>
+
+  <aside id="moves-wrap">
+    <div id="players"></div>
+    <div id="move-list"><p class="empty">select a game on the left</p></div>
+  </aside>
+</div>
+
+<script>{{chessjs}}</script>
+<script>
+'use strict';
+const ChessLib = window.ChessJS || {};
+const FILES = 'abcdefgh';
+const GLYPHS = { k: '\u265A', q: '\u265B', r: '\u265C', b: '\u265D', n: '\u265E', p: '\u265F' };
+const CLS_TEXT = { brilliant: 'Brilliant move!', best: 'Best move', good: 'Good move',
+                   inaccuracy: 'Inaccuracy', mistake: 'Mistake', blunder: 'Blunder' };
+const CLS_COLOR = { brilliant: '#26bfa5', best: '#81b64c', good: '#a8c46a',
+                    inaccuracy: '#f7c631', mistake: '#ff8e3c', blunder: '#fa412d' };
+const MOTIF_TEXT = {
+  hanging_piece: 'a piece was left hanging — it can be captured for free',
+  missed_fork: 'a fork was missed (one piece attacking two at once)',
+  pin_created: 'a piece became pinned and cannot move',
+  skewer_available: 'the opponent can win material with a skewer',
+  fork_available_opponent: 'the opponent can fork two of your pieces',
+  king_safety: 'your king came under attack',
+  back_rank: 'back-rank danger — the king is trapped on the last rank',
+  pawn_concession: 'the pawn structure got weakened (doubled or isolated pawns)',
+  endgame_technique: 'precise endgame technique was needed here',
+  timeout_adjacent: 'this happened with almost no time left on the clock',
+  uncategorized: ''
+};
+
+function esc(s) { const d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+
+// ---- state ----
+let games = [];       // list from /api/games
+let G = null;         // current game (with per-move review data)
+let fens = [];        // fens[p]: position after p plies (fens[0] = start)
+let ply = 0;
+let mistakePlies = [];// my mistake/blunder plies, ascending
+let flipped = false;
+let variation = null; // { startPly, chess } — user's own line
+let sel = null;       // selected square
+let targets = [];
+
+const boardEl = document.getElementById('board');
+
+// ---- helpers ----
+function displayPos() {
+  return variation ? variation.chess : new ChessLib.Chess(fens[ply]);
+}
+function moverWinp(m, which) {  // mover-POV win% for before/after
+  const w = m['winp_' + which];
+  return m.side === 'white' ? w : 100 - w;
+}
+function describeWinp(v) {
+  if (v >= 80) return 'winning';
+  if (v >= 62) return 'clearly better';
+  if (v >= 54) return 'slightly better';
+  if (v > 46)  return 'roughly equal';
+  if (v > 38)  return 'slightly worse';
+  if (v > 20)  return 'clearly worse';
+  return 'losing';
+}
+function fmtClock(s) {
+  if (s == null) return '';
+  s = Math.max(0, Math.round(s));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+function cpText(cp) {
+  if (cp >= 10000) return 'M'; if (cp <= -10000) return '-M';
+  const v = cp / 100; return (v > 0 ? '+' : '') + v.toFixed(1);
+}
+
+// ---- board rendering ----
+function renderBoard() {
+  const pos = displayPos();
+  const whiteBottom = !flipped;
+  boardEl.innerHTML = '';
+  const lastMove = variation ? null : (ply > 0 ? G.moves[ply - 1] : null);
+  const lastFrom = lastMove ? lastMove.uci.slice(0, 2) : null;
+  const lastTo = lastMove ? lastMove.uci.slice(2, 4) : null;
+  const blunderTo = lastMove && lastMove.side === G.color &&
+        (lastMove.classification === 'blunder' || lastMove.classification === 'mistake') ? lastTo : null;
+  let kingSq = null;
+  if (pos.inCheck()) {
+    for (const s of SQUARES()) { const p = pos.get(s); if (p && p.type === 'k' && p.color === pos.turn()) kingSq = s; }
+  }
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      const file = whiteBottom ? col : 7 - col;
+      const rank = whiteBottom ? 7 - row : row;
+      const name = FILES[file] + (rank + 1);
+      const sq = document.createElement('div');
+      sq.className = 'sq ' + (((file + rank) % 2) ? 'light' : 'dark');
+      sq.dataset.square = name;
+      const piece = pos.get(name);
+      if (piece) {
+        const sp = document.createElement('span');
+        sp.className = 'piece ' + (piece.color === 'w' ? 'w' : 'b');
+        sp.textContent = GLYPHS[piece.type];
+        sq.appendChild(sp);
+      }
+      if (name === lastFrom || name === lastTo) sq.classList.add('last');
+      if (name === sel) sq.classList.add('sel');
+      if (name === kingSq) sq.classList.add('check');
+      const target = targets.find(t => t.to === name);
+      if (target) {
+        sq.classList.add('target');  // separate tokens: 'target capture' is not a valid single token
+        if (target.captured || target.flags.includes('e')) sq.classList.add('capture');
+      }
+      if (name === blunderTo && !variation) sq.classList.add('blunder');
+      if (rank === (whiteBottom ? 0 : 7)) sq.insertAdjacentHTML('beforeend', '<span class="coord file">' + FILES[file] + '</span>');
+      if (file === (whiteBottom ? 0 : 7)) sq.insertAdjacentHTML('beforeend', '<span class="coord rank">' + (rank + 1) + '</span>');
+      boardEl.appendChild(sq);
+    }
+  }
+  function SQUARES() { const out = []; for (let r = 1; r <= 8; r++) for (const f of FILES) out.push(f + r); return out; }
+}
+
+// ---- piece interaction: click-click and drag (pointer events) ----
+let drag = null; // { from, moved, ghost }
+
+function squareAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  const sq = el && el.closest ? el.closest('.sq') : null;
+  return sq ? sq.dataset.square : null;
+}
+
+boardEl.addEventListener('pointerdown', e => {
+  const sqEl = e.target.closest('.sq');
+  if (!sqEl) return;
+  e.preventDefault();
+  const name = sqEl.dataset.square;
+  if (sel && targets.some(t => t.to === name)) { tryMove(sel, name); return; }  // click-click
+  const pos = displayPos();
+  const piece = pos.get(name);
+  if (piece && piece.color === pos.turn()) {
+    if (sel === name) { sel = null; targets = []; }
+    else { sel = name; targets = pos.moves({ square: name, verbose: true }); }
+    drag = { from: name, moved: false, ghost: null, startX: e.clientX, startY: e.clientY };
+    try { boardEl.setPointerCapture(e.pointerId); } catch (err) { /* non-active pointer */ }
+  } else { sel = null; targets = []; }
+  renderBoard();
+});
+
+boardEl.addEventListener('pointermove', e => {
+  if (!drag) return;
+  if (!drag.moved) {
+    if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < 5) return;
+    drag.moved = true;
+    const pieceEl = boardEl.querySelector('.sq[data-square="' + drag.from + '"] .piece');
+    if (pieceEl) {
+      const ghost = pieceEl.cloneNode(true);
+      ghost.style.cssText = 'position:fixed;pointer-events:none;z-index:10;font-size:' +
+        getComputedStyle(pieceEl).fontSize + ';width:1em;text-align:center';
+      ghost.classList.add('dragging');
+      document.body.appendChild(ghost);
+      drag.ghost = ghost;
+      pieceEl.style.visibility = 'hidden';
+    }
+  }
+  if (drag.ghost) {
+    drag.ghost.style.left = (e.clientX - drag.ghost.offsetWidth / 2) + 'px';
+    drag.ghost.style.top = (e.clientY - drag.ghost.offsetHeight / 2) + 'px';
+  }
+});
+
+boardEl.addEventListener('pointerup', e => {
+  if (!drag) return;
+  const d = drag; drag = null;
+  if (d.ghost) d.ghost.remove();
+  if (d.moved) {
+    const to = squareAt(e.clientX, e.clientY);
+    if (to && to !== d.from) tryMove(d.from, to);
+    else renderBoard();
+  }
+  // plain click on own piece: selection stays as set in pointerdown
+});
+
+boardEl.addEventListener('pointercancel', () => {
+  if (drag && drag.ghost) drag.ghost.remove();
+  drag = null; sel = null; targets = [];
+  renderBoard();
+});
+
+function tryMove(from, to) {
+  const m = targets.find(t => t.from === from && t.to === to);
+  sel = null; targets = [];
+  if (!m) { renderBoard(); return; }
+  const uci = from + to + (m.promotion ? 'q' : '');
+  // replaying the actual game: clicking through the played moves
+  if (!variation && ply < fens.length - 1 && G.moves[ply].uci === uci) { setPly(ply + 1); return; }
+  if (!variation) {
+    variation = { startPly: ply, chess: new ChessLib.Chess(fens[ply]) };
+    document.getElementById('variation').hidden = false;
+  }
+  variation.chess.move({ from: from, to: to, promotion: 'q' });
+  clearSf();
+  renderVariation();
+  renderBoard();
+  renderPanel();
+}
+
+function renderVariation() {
+  const hist = variation ? variation.chess.history() : [];
+  document.getElementById('var-moves').textContent = hist.length ? hist.join(' ') : '';
+  document.getElementById('b-var-undo').disabled = hist.length === 0;
+}
+
+function exitVariation() {
+  variation = null; sel = null; targets = [];
+  document.getElementById('variation').hidden = true;
+}
+
+// ---- ply navigation ----
+function setPly(n) {
+  exitVariation();
+  ply = Math.max(0, Math.min(fens.length - 1, n));
+  document.getElementById('slider').value = ply;
+  updateAfterPly();
+}
+
+function updateAfterPly() {
+  clearSf();
+  renderBoard();
+  renderEvalBar();
+  renderMoveList();
+  renderPanel();
+  const url = new URL(location.href);
+  if (G) { url.searchParams.set('game', G.uuid); url.searchParams.set('ply', ply); history.replaceState(null, '', url); }
+}
+
+// ---- ask stockfish ----
+let sfBusy = false;
+
+function clearSf() {
+  document.getElementById('arrows').innerHTML = '';
+  const el = document.getElementById('sf-result');
+  el.hidden = true; el.innerHTML = ''; el.classList.remove('err');
+}
+
+function arrowGeometry(square) {
+  const whiteBottom = !flipped;
+  const file = FILES.indexOf(square[0]);
+  const rank = +square[1] - 1;
+  const x = whiteBottom ? file : 7 - file;
+  const y = whiteBottom ? 7 - rank : rank;
+  return [x + 0.5, y + 0.5];
+}
+
+function drawArrow(fromSq, toSq, color) {
+  const [x1, y1] = arrowGeometry(fromSq);
+  const [x2, y2] = arrowGeometry(toSq);
+  const dx = x2 - x1, dy = y2 - y1;
+  const len = Math.hypot(dx, dy);
+  if (!len) return;
+  const ux = dx / len, uy = dy / len, px = -uy, py = ux;
+  const sx = x1 + ux * 0.28, sy = y1 + uy * 0.28;        // shaft start
+  const hx = x2 - ux * 0.42, hy = y2 - uy * 0.42;        // shaft end / head base
+  const w = 0.22;
+  document.getElementById('arrows').insertAdjacentHTML('beforeend',
+    '<line x1="' + sx + '" y1="' + sy + '" x2="' + hx + '" y2="' + hy +
+    '" stroke="' + color + '" stroke-width="0.17" stroke-linecap="round" opacity="0.8"/>' +
+    '<polygon points="' + x2 + ',' + y2 + ' ' + (hx + px * w) + ',' + (hy + py * w) +
+    ' ' + (hx - px * w) + ',' + (hy - py * w) + '" fill="' + color + '" opacity="0.8"/>');
+}
+
+function sfEvalText(line, pos) {
+  // engine eval from the mover's point of view, in human terms
+  const mover = pos.turn();  // 'w' | 'b'
+  const moverCp = mover === 'w' ? line.cp : -line.cp;
+  const winp = mover === 'w' ? line.winp : 100 - line.winp;
+  if (line.mate != null) {
+    const m = Math.abs(line.mate);
+    return line.mate > 0 ? 'checkmate in ' + m : 'getting mated in ' + m;
+  }
+  return cpText(moverCp) + ' — ' + describeWinp(winp) + ' for ' + (mover === 'w' ? 'White' : 'Black');
+}
+
+async function askStockfish() {
+  if (!G || sfBusy) return;
+  const btn = document.getElementById('b-ask-sf');
+  sfBusy = true;
+  const oldLabel = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = 'thinking&hellip;';
+  try {
+    const pos = displayPos();
+    const resp = await fetch('/api/best?fen=' + encodeURIComponent(pos.fen()) + '&multipv=3');
+    const data = await resp.json();
+    renderSf(data, pos);
+  } catch (err) {
+    renderSf({ error: 'request failed — is the server running?' }, null);
+  } finally {
+    sfBusy = false;
+    btn.disabled = false;
+    btn.innerHTML = oldLabel;
+  }
+}
+
+function renderSf(data, pos) {
+  const el = document.getElementById('sf-result');
+  document.getElementById('arrows').innerHTML = '';
+  el.hidden = false;
+  el.classList.remove('err');
+  if (data.error) {
+    el.classList.add('err');
+    el.innerHTML = '<span class="sf-head">Stockfish unavailable:</span> ' + esc(data.error);
+    return;
+  }
+  if (data.game_over || !data.lines.length) {
+    el.innerHTML = '<span class="sf-head">The game is already decided here — nothing left to play.</span>';
+    return;
+  }
+  const best = data.lines[0];
+  // contextual headline: whose mistake are we looking at?
+  let head = 'Best move in this position:';
+  if (variation) head = 'Best move in your line:';
+  else if (ply > 0 && G.moves[ply - 1]) {
+    const m = G.moves[ply - 1];
+    const mine = m.side === G.color;
+    const bad = m.classification === 'blunder' || m.classification === 'mistake';
+    if (mine && bad) head = m.classification === 'blunder'
+      ? 'You blundered here. The best move was:'
+      : 'You made a mistake here. The best move was:';
+    else if (!mine && bad) head = 'Your opponent made a mistake — punish it with:';
+  }
+  let html = '<div class="sf-head">' + esc(head) + '</div>';
+  if (best.san) html += '<div class="sf-move">' + esc(best.san) + '</div>';
+  html += '<div class="sf-eval">' + esc(sfEvalText(best, pos)) + '</div>';
+  if (data.lines.length > 1) {
+    html += '<div class="sf-alts">alternatives: ' + data.lines.slice(1).map(l => {
+      const cp = pos.turn() === 'w' ? l.cp : -l.cp;
+      return esc(l.san) + ' ' + (l.mate != null ? (l.mate > 0 ? '+M' + l.mate : '-M' + Math.abs(l.mate)) : cpText(cp));
+    }).join(' &middot; ') + '</div>';
+  }
+  if (best.pv_san && best.pv_san.length > 1) {
+    html += '<div class="sf-pv">expected line: ' + esc(best.pv_san.slice(0, 6).join(' ')) + '</div>';
+  }
+  if (data.engine) html += '<div class="sf-engine">' + esc(data.engine) + '</div>';
+  el.innerHTML = html;
+  // arrows: best move (green); the played move (gray) when it differs
+  drawArrow(best.uci.slice(0, 2), best.uci.slice(2, 4), '#3a8b1f');
+  if (!variation && ply > 0 && ply <= G.moves.length && G.moves[ply - 1].uci !== best.uci) {
+    const played = G.moves[ply - 1].uci;
+    drawArrow(played.slice(0, 2), played.slice(2, 4), '#7a7a7a');
+  }
+}
+
+function renderEvalBar() {
+  const winp = ply > 0 ? G.moves[ply - 1].winp_after : 50;
+  document.getElementById('eval-fill').style.height = winp + '%';
+  document.getElementById('eval-bar').title =
+    'white win% ' + winp.toFixed(0) + (ply > 0 ? ' · eval ' + cpText(G.moves[ply - 1].cp_after) : '');
+}
+
+// ---- move list ----
+function renderMoveList() {
+  const el = document.getElementById('move-list');
+  if (!G) { el.innerHTML = '<p class="empty">select a game on the left</p>'; return; }
+  let html = '';
+  for (let i = 0; i < G.moves.length; i += 2) {
+    html += '<div class="mrow"><span class="mnum">' + (i / 2 + 1) + '.</span>';
+    html += mvHtml(G.moves[i], i + 1);
+    html += (G.moves[i + 1] ? mvHtml(G.moves[i + 1], i + 2) : '<span></span>');
+    html += '</div>';
+  }
+  el.innerHTML = html || '<p class="empty">(no moves)</p>';
+  el.querySelectorAll('.mv').forEach(mv => mv.addEventListener('click', () => setPly(+mv.dataset.ply)));
+  const cur = el.querySelector('.mv.current');
+  if (cur) cur.scrollIntoView({ block: 'nearest' });
+
+  function mvHtml(m, p) {
+    const mine = m.side === G.color;
+    const dot = '<i class="dot ' + m.classification + '" title="' + esc(CLS_TEXT[m.classification] || m.classification) + '"></i>';
+    return '<span class="mv' + (p === ply ? ' current' : '') + '" data-ply="' + p + '">' +
+      dot + esc(m.san) + '</span>';
+  }
+}
+
+// ---- explanation panel ----
+function renderPanel() {
+  const el = document.getElementById('panel');
+  if (!G) { el.innerHTML = '<span class="empty">select a game on the left</span>'; return; }
+  if (variation) {
+    el.innerHTML = '<div class="cls-note">Exploring your own line from move ' +
+      Math.ceil(variation.startPly / 2) + '. Drag or click pieces to try ideas — ' +
+      '<b>back to game</b> returns to the real position.</div>';
+    return;
+  }
+  if (ply === 0) {
+    el.innerHTML = '<div class="cls-note">Starting position. Use the slider or arrow keys to replay the game, ' +
+      'or click a piece to explore your own ideas.</div>';
+    return;
+  }
+  const m = G.moves[ply - 1];
+  const mine = m.side === G.color;
+  const before = describeWinp(moverWinp(m, 'before'));
+  const after = describeWinp(moverWinp(m, 'after'));
+  const who = mine ? 'You' : 'Your opponent';
+  let html = '<span class="cls-word" style="color:' + (CLS_COLOR[m.classification] || '#666') + '">' +
+    esc(CLS_TEXT[m.classification] || m.classification) + '</span> <span class="muted">' +
+    esc(m.san) + ' — ' + who + ' played this.</span>';
+  if (mine && ['blunder', 'mistake', 'inaccuracy'].includes(m.classification)) {
+    html += '<div class="cls-note">' + who + ' went from <b>' + esc(before) + '</b> to <b>' + esc(after) +
+      '</b> (lost ' + m.drop.toFixed(0) + '% winning chances).</div>';
+    const motifs = (m.meta && m.meta.motifs) || [];
+    const lines = motifs.map(x => MOTIF_TEXT[x]).filter(Boolean);
+    if (lines.length) html += '<ul class="motifs">' + lines.map(t => '<li>' + esc(t) + '</li>').join('') + '</ul>';
+    if (m.clock_s != null) html += '<div class="muted">&#9201; ' + fmtClock(m.clock_s) + ' left on the clock</div>';
+  } else if (!mine) {
+    html += '<div class="cls-note">Their position went from ' + esc(before) + ' to ' + esc(after) + '.</div>';
+  } else {
+    html += '<div class="cls-note">Your position stayed ' + esc(after) + '.</div>';
+  }
+  el.innerHTML = html;
+}
+
+// ---- game data ----
+async function loadGames() {
+  const resp = await fetch('/api/games');
+  games = await resp.json();
+  renderGameList();
+}
+
+function renderGameList() {
+  const el = document.getElementById('games-list');
+  const sort = document.getElementById('sort').value;
+  const only = document.getElementById('only-mistakes').checked;
+  let list = games.filter(g => !only || g.mistakes > 0);
+  if (sort === 'mistakes') list = [...list].sort((a, b) => b.mistakes - a.mistakes || b.end_time - a.end_time);
+  else if (sort === 'accuracy') list = [...list].sort((a, b) => (a.accuracy ?? 100) - (b.accuracy ?? 100) || b.end_time - a.end_time);
+  else list = [...list].sort((a, b) => b.end_time - a.end_time);
+  if (!list.length) {
+    el.innerHTML = '<p class="empty">' + (games.length ? 'no games match the filter' :
+      'no analyzed games yet — run <b>analyze</b> on the pipeline page first') + '</p>';
+    return;
+  }
+  el.innerHTML = list.map(g => {
+    const d = new Date(g.end_time * 1000).toISOString().slice(0, 10);
+    const res = { win: 'W', loss: 'L', draw: 'D' }[g.result] || '?';
+    return '<div class="g' + (G && G.uuid === g.uuid ? ' active' : '') + '" data-uuid="' + esc(g.uuid) + '">' +
+      '<div class="row1"><span class="opp">' + esc(g.opponent || '?') + '</span>' +
+      '<span class="res-' + res + '">' + res + '</span></div>' +
+      '<div class="row2"><span>' + d + '</span><span>' + esc(g.time_class) + ' · as ' + esc(g.color) + '</span>' +
+      '<span>' + (g.accuracy != null ? 'acc ' + g.accuracy : '') + '</span>' +
+      '<span class="m"><b class="m">' + g.mistakes + '</b> mistakes</span></div></div>';
+  }).join('');
+  el.querySelectorAll('.g').forEach(div => div.addEventListener('click', () => loadGame(div.dataset.uuid)));
+}
+
+async function loadGame(uuid, keepPly) {
+  const resp = await fetch('/api/game/' + encodeURIComponent(uuid));
+  if (!resp.ok) return;
+  G = await resp.json();
+  // rebuild all positions from the review's uci moves
+  const c = new ChessLib.Chess();
+  fens = [c.fen()];
+  for (const m of G.moves) {
+    const mv = { from: m.uci.slice(0, 2), to: m.uci.slice(2, 4) };
+    if (m.uci.length > 4) mv.promotion = m.uci[4];
+    if (!c.move(mv)) break;
+    fens.push(c.fen());
+  }
+  mistakePlies = G.moves.filter(m => m.side === G.color &&
+    (m.classification === 'mistake' || m.classification === 'blunder')).map(m => m.ply);
+  flipped = G.color === 'black';
+  document.getElementById('slider').max = fens.length - 1;
+  const d = new Date(G.end_time * 1000).toISOString().slice(0, 10);
+  const res = { win: 'won', loss: 'lost', draw: 'drew' }[G.my_result] || G.my_result;
+  document.getElementById('game-title').textContent =
+    (G.white || '?') + ' vs ' + (G.black || '?') + ' · ' + d + ' · you ' + res + ' as ' + G.color;
+  document.getElementById('players').innerHTML =
+    '<div class="p' + (G.color === 'white' ? ' me' : '') + '"><span>' + esc(G.white || 'White') + '</span><span>' +
+    (G.white_rating ?? '') + '</span></div>' +
+    '<div class="p' + (G.color === 'black' ? ' me' : '') + '"><span>' + esc(G.black || 'Black') + '</span><span>' +
+    (G.black_rating ?? '') + '</span></div>' +
+    '<div class="p"><span>accuracy ' + (G.accuracy_white ?? '?') + ' / ' + (G.accuracy_black ?? '?') + '</span>' +
+    (G.link ? '<span><a href="' + esc(G.link) + '" target="_blank">on chess.com &#8599;</a></span>' : '') + '</div>';
+  setPly(keepPly ? ply : 0);
+  renderGameList();
+}
+
+// ---- mistake jumps ----
+function jumpMistake(dir) {
+  if (!G) return;
+  const next = dir > 0
+    ? mistakePlies.find(p => p > ply)
+    : [...mistakePlies].reverse().find(p => p < ply);
+  if (next != null) setPly(next);
+}
+
+// ---- events ----
+document.getElementById('slider').addEventListener('input', e => setPly(+e.target.value));
+document.getElementById('b-first').addEventListener('click', () => setPly(0));
+document.getElementById('b-last').addEventListener('click', () => setPly(fens.length - 1));
+document.getElementById('b-prev').addEventListener('click', () => setPly(ply - 1));
+document.getElementById('b-next').addEventListener('click', () => setPly(ply + 1));
+document.getElementById('b-flip').addEventListener('click', () => { flipped = !flipped; clearSf(); renderBoard(); });
+document.getElementById('b-mnext').addEventListener('click', () => jumpMistake(1));
+document.getElementById('b-mprev').addEventListener('click', () => jumpMistake(-1));
+document.getElementById('b-ask-sf').addEventListener('click', askStockfish);
+document.getElementById('b-var-undo').addEventListener('click', () => {
+  if (!variation) return;
+  variation.chess.undo();
+  if (!variation.chess.history().length) exitVariation();
+  else renderVariation();
+  clearSf();
+  renderBoard();
+});
+document.getElementById('b-var-back').addEventListener('click', () => { exitVariation(); clearSf(); renderBoard(); renderPanel(); });
+document.getElementById('sort').addEventListener('change', renderGameList);
+document.getElementById('only-mistakes').addEventListener('change', renderGameList);
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') { setPly(ply - 1); e.preventDefault(); }
+  else if (e.key === 'ArrowRight') { setPly(ply + 1); e.preventDefault(); }
+});
+
+// ---- init ----
+(async function init() {
+  await loadGames();
+  const params = new URLSearchParams(location.search);
+  const uuid = params.get('game');
+  if (uuid && games.some(g => g.uuid === uuid)) {
+    await loadGame(uuid);
+    const p = +params.get('ply');
+    if (Number.isInteger(p) && p > 0) setPly(p);
+  } else if (games.length) {
+    await loadGame(games[0].uuid);
+  }
+})();
+</script>
+</body>
+</html>

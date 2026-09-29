@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Opening blunders — chess-analysis</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0 auto; padding: 1.2rem; max-width: 1150px; color: #222; }
+  header { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: .8rem; }
+  header h1 { font-size: 1.4rem; margin: 0; }
+  header a { color: #4a7fb5; }
+  .muted { color: #777; font-size: .85rem; }
+  h2 { font-size: 1.2rem; margin-top: 2rem; border-bottom: 2px solid #ddd; padding-bottom: .3rem; }
+
+  .trap-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 1rem;
+               margin: .9rem 0; }
+  .trap-card h3 { margin: 0 0 .4rem; font-size: 1.05rem; }
+  .trap-card .count { color: #c25b4a; font-weight: 700; }
+  .trap-body { display: flex; gap: 1.2rem; flex-wrap: wrap; align-items: flex-start; }
+  .trap-left { flex: 0 0 auto; }
+  .trap-right { flex: 1 1 300px; min-width: 280px; }
+  .occ { margin-top: .35rem; font-size: .8rem; color: #555; max-width: 200px; }
+  .occ a { color: #4a7fb5; }
+  .played { font-size: .85rem; margin-top: .3rem; }
+  .cls-blunder { color: #fa412d; font-weight: 700; }
+  .cls-mistake { color: #ff8e3c; font-weight: 700; }
+  .cls-inaccuracy { color: #c9a227; font-weight: 700; }
+
+  .mini { text-decoration: none; color: inherit; display: inline-block; }
+  .mini:hover .mini-board { outline: 3px solid #4a7fb5; outline-offset: 2px; }
+  .mini-board { position: relative; display: grid; grid-template-columns: repeat(8, 1fr);
+                grid-template-rows: repeat(8, 1fr); width: 200px; height: 200px;
+                border: 2px solid #333; }
+  .mini-board .sq { position: relative; display: flex; align-items: center; justify-content: center;
+                    font-size: 22px; }
+  .mini-board .sq.light { background: #f0d9b5; } .mini-board .sq.dark { background: #b58863; }
+  .mini-board .piece.w { color: #fafafa; text-shadow: 0 0 2px #000, 0 1px 2px rgba(0,0,0,.8); }
+  .mini-board .piece.b { color: #1c1c1c; text-shadow: 0 0 2px rgba(255,255,255,.4); }
+  .mini-board .sq.blunder::before { content: ''; position: absolute; top: 8%; right: 8%;
+    width: 24%; height: 24%; border-radius: 50%; background: #fa412d; z-index: 3;
+    box-shadow: 0 0 4px rgba(0,0,0,.5); }
+  .mini-board svg { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+
+  .sol { border: 1px solid #b7d4a6; background: #f2f8ec; border-radius: 8px;
+         padding: .7rem .9rem; font-size: .92rem; }
+  .sol.loading { border-color: #ddd; background: #fafafa; color: #888; }
+  .sol .sol-head { font-weight: 700; }
+  .sol .sol-move { font-size: 1.2rem; font-weight: 700; color: #3a6b1f; margin: .2rem 0 .1rem; }
+  .sol .sol-eval { font-weight: 600; }
+  .sol .sol-alts { margin-top: .3rem; color: #555; font-size: .85rem; }
+  .sol .sol-advice { margin-top: .5rem; padding-top: .5rem; border-top: 1px solid #cfe3c1; }
+  .sol .sol-advice b { color: #3a6b1f; }
+  .sol.err { border-color: #d8a3a3; background: #f9ecec; }
+  .sol .san-note { color: #999; font-size: .8rem; margin-left: .3rem; }
+
+  .practice-btns { display: flex; gap: .5rem; margin-top: .7rem; flex-wrap: wrap; }
+  .practice-btns button { padding: .35rem .8rem; border: 1px solid #ccc; border-radius: 6px;
+      background: #fafafa; cursor: pointer; font-size: .9rem; }
+  .practice-btns button:hover { background: #eef; }
+  .b-practice { background: #e7f2e2 !important; border-color: #81b64c !important; font-weight: 600; }
+
+  .practice-area { margin-top: .8rem; border-top: 1px dashed #ddd; padding-top: .8rem; }
+  .p-wrap { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-start; }
+  .p-board { flex: 0 0 auto; position: relative; width: 300px; aspect-ratio: 1; border: 2px solid #333;
+             user-select: none; touch-action: manipulation; display: grid;
+             grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+             container-type: inline-size; cursor: pointer; }
+  .p-board .sq { position: relative; display: flex; align-items: center; justify-content: center; }
+  .p-board .sq.light { background: #f0d9b5; } .p-board .sq.dark { background: #b58863; }
+  .p-board .piece { font-size: 9.2cqw; line-height: 1; }
+  .p-board .piece.w { color: #fafafa; text-shadow: 0 0 2px #000, 0 1px 2px rgba(0,0,0,.8); }
+  .p-board .piece.b { color: #1c1c1c; text-shadow: 0 0 2px rgba(255,255,255,.4); }
+  .p-board .sq.sel::after { content: ''; position: absolute; inset: 0; background: rgba(80, 140, 220, .45); }
+  .p-board .sq.target::before { content: ''; position: absolute; width: 30%; height: 30%;
+      border-radius: 50%; background: rgba(30,30,30,.35); z-index: 2; }
+  .p-board .sq.target.capture::before { width: 88%; height: 88%; border-radius: 50%; background: none;
+      border: 5px solid rgba(200,40,40,.55); box-sizing: border-box; }
+  .p-board .sq.checksq { background: radial-gradient(circle, #d64545 30%, #b58863 100%) !important; }
+  .p-board svg { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+  .coord { position: absolute; font-size: 2.4cqw; color: rgba(0,0,0,.55); font-weight: 700; pointer-events: none; }
+  .coord.rank { top: 1%; left: 4%; } .sq.dark .coord { color: rgba(255,255,255,.7); }
+  .coord.file { bottom: 1%; right: 5%; }
+
+  .p-side { flex: 1 1 240px; min-width: 240px; }
+  .p-task { font-size: .95rem; font-weight: 600; margin-bottom: .3rem; }
+  .p-feedback { margin-top: .5rem; font-size: .95rem; min-height: 1.4em; }
+  .p-feedback.good { color: #2a7a2a; font-weight: 700; }
+  .p-feedback.bad { color: #b03030; font-weight: 700; }
+  .p-hint { color: #777; font-size: .82rem; margin-top: .4rem; }
+  .p-badge { font-size: .78rem; margin-left: .5rem; padding: .1rem .5rem; border-radius: 10px; }
+  .p-badge.solved { background: #e2f2dc; color: #2a7a2a; font-weight: 700; }
+  .p-badge.tried { background: #fdf3e0; color: #a06a00; font-weight: 700; }
+
+  .pat-block { border: 1px solid #ddd; border-radius: 8px; padding: .8rem 1rem; margin: .8rem 0; background: #fff; }
+  .pat-block h3 { margin: 0 0 .2rem; font-size: 1.02rem; }
+  .pat-desc { color: #555; font-size: .9rem; }
+  .pat-advice { color: #3a6b1f; font-size: .88rem; margin-top: .3rem; }
+  .examples { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .7rem; }
+  .mini .meta { font-size: .75rem; color: #555; max-width: 205px; margin-top: .25rem; }
+  .none { color: #999; font-style: italic; }
+  .empty { color: #999; font-style: italic; padding: 1rem; }
+</style>
+<script>{{chessjs}}</script>
+</head>
+<body>
+<header>
+  <h1>Opening blunders</h1>
+  <a href="/">&larr; pipeline</a>
+  <a href="/insights">&#128202; mistake insights</a>
+  <a href="/viewer">&#9822; game viewer</a>
+  <span class="muted" id="summary"></span>
+</header>
+
+<p class="muted">Your mistakes from the first 10 moves of each game. Click any board to open the game at that moment.
+Solutions come from Stockfish (the first calculation per position is stored, so it only asks the engine once).</p>
+
+<h2>Traps you keep falling into</h2>
+<p class="muted">The exact same position, reached again and again in different games — and blundered in each time.
+Each card shows what you keep playing, the move you should play instead, and a way to practice it.</p>
+<div id="traps"><p class="empty">loading…</p></div>
+
+<h2>Patterns in your openings</h2>
+<p class="muted">Not the same exact position, but the same kind of mistake in the same opening, around the same stage.</p>
+<div id="patterns"><p class="empty">loading…</p></div>
+
+<script>
+'use strict';
+const ChessLib = window.ChessJS || {};
+const GLYPHS = { k: '\u265A', q: '\u265B', r: '\u265C', b: '\u265D', n: '\u265E', p: '\u265F' };
+const FILES = 'abcdefgh';
+const CLS_CLASS = { blunder: 'cls-blunder', mistake: 'cls-mistake', inaccuracy: 'cls-inaccuracy' };
+
+const MOTIF_TEXT = {
+  hanging_piece: 'you left a piece where it could be captured',
+  missed_fork: 'you missed a fork (one piece attacking two at once)',
+  pin_created: 'your piece got pinned and could not move',
+  skewer_available: 'the opponent could win material with a skewer',
+  fork_available_opponent: 'you allowed a fork of two of your pieces',
+  king_safety: 'your king came under attack',
+  back_rank: 'back-rank danger — your king got trapped on the last rank',
+  pawn_concession: 'you weakened your pawn structure (doubled or isolated pawns)',
+  endgame_technique: 'precise play was needed here',
+  timeout_adjacent: 'this happened with almost no time left on the clock',
+  uncategorized: 'other mistakes'
+};
+const ADVICE_TEXT = {
+  hanging_piece: 'Before you commit a move in the opening, scan every one of your pieces that stands unprotected — especially ones the opponent\u2019s queen or bishops can reach.',
+  missed_fork: 'Before each opening move, look for your own knight jumps that attack two pieces at once — you keep missing these chances.',
+  pin_created: 'Keep valuable pieces off the same line as your king — otherwise they get pinned and cannot move.',
+  skewer_available: 'Watch for your pieces lining up with something more valuable behind them — moving the front one exposes the other.',
+  fork_available_opponent: 'Before moving, check what the opponent\u2019s last move threatens: look for their pieces (especially knights and the queen) that could attack two of yours at once. Keep everything defended.',
+  king_safety: 'Castle early and don\u2019t open lines towards your own king in the opening.',
+  back_rank: 'Even early on, keep an eye on your back rank — a small pawn move can make your king\u2019s home unsafe.',
+  pawn_concession: 'In the opening, prefer developing pieces over pawn moves that permanently weaken your structure.',
+  endgame_technique: 'Slow down: calculate one move deeper before committing.',
+  timeout_adjacent: 'This keeps happening in time trouble — leave a small time buffer for the opening.',
+  uncategorized: 'Slow down in the opening: before you move, ask what your opponent\u2019s last move threatens.'
+};
+
+let DATA = null;
+const ADVICE = {};   // fen -> /api/best payload
+const PRACTICE = {}; // trapId -> { chess, sel, targets, solved, shown, attempts }
+
+function esc(s) { const d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+function escAttr(s) { return esc(s).replace(/"/g, '&quot;'); }
+
+function describeWinp(v) {
+  if (v >= 80) return 'winning';
+  if (v >= 62) return 'clearly better';
+  if (v >= 54) return 'slightly better';
+  if (v > 46)  return 'roughly equal';
+  if (v > 38)  return 'slightly worse';
+  if (v > 20)  return 'clearly worse';
+  return 'losing';
+}
+function cpText(cp) {
+  if (cp >= 10000) return 'M'; if (cp <= -10000) return '-M';
+  const v = cp / 100; return (v > 0 ? '+' : '') + v.toFixed(1);
+}
+function evalText(line, sideToMove) {  // engine eval from that side's point of view
+  if (line.mate != null) {
+    const m = Math.abs(line.mate);
+    return line.mate > 0 ? 'checkmate in ' + m : 'getting mated in ' + m;
+  }
+  const cp = sideToMove === 'w' ? line.cp : -line.cp;
+  const winp = sideToMove === 'w' ? line.winp : 100 - line.winp;
+  return cpText(cp) + ' — ' + describeWinp(winp) + ' for ' + (sideToMove === 'w' ? 'you (white)' : 'you (black)');
+}
+
+// ---- arrows ----
+function arrowSvg(uci, bottomBlack, color) {
+  const from = uci.slice(0, 2), to = uci.slice(2, 4);
+  const pt = sq => {
+    const file = FILES.indexOf(sq[0]), rank = +sq[1] - 1;
+    const x = bottomBlack ? 7 - file : file;
+    const y = bottomBlack ? rank : 7 - rank;
+    return [x + 0.5, y + 0.5];
+  };
+  const [x1, y1] = pt(from), [x2, y2] = pt(to);
+  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
+  if (!len) return '';
+  const ux = dx / len, uy = dy / len, px = -uy, py = ux;
+  const sx = x1 + ux * .28, sy = y1 + uy * .28, hx = x2 - ux * .42, hy = y2 - uy * .42, w = .24;
+  return '<line x1="' + sx + '" y1="' + sy + '" x2="' + hx + '" y2="' + hy +
+    '" stroke="' + color + '" stroke-width="0.18" stroke-linecap="round" opacity="0.85"/>' +
+    '<polygon points="' + x2 + ',' + y2 + ' ' + (hx + px * w) + ',' + (hy + py * w) + ' ' +
+    (hx - px * w) + ',' + (hy - py * w) + '" fill="' + color + '" opacity="0.85"/>';
+}
+
+// ---- static mini board: position BEFORE the mistake, red dot on the
+// blundered-to square, arrows for played (gray) and best (green) ----
+function miniBoardHtml(m, bestUci) {
+  const rows = (m.fen_before || '').split(' ')[0].split('/');
+  const bottomBlack = m.side === 'black';
+  let squares = '';
+  if (rows.length === 8) {
+    const grid = rows.map(r => [...r]);
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        const file = bottomBlack ? 7 - col : col;
+        const rank = bottomBlack ? row : 7 - row;
+        const rankFromTop = 7 - rank;
+        const cells = grid[rankFromTop] || [];
+        let piece = null, idx = 0;
+        for (const ch of cells) {
+          if (/\d/.test(ch)) idx += +ch;
+          else { if (idx === file) { piece = ch; break; } idx++; }
+        }
+        const name = FILES[file] + (rank + 1);
+        const light = (file + rank) % 2 === 1;
+        const to = m.uci.slice(2, 4);
+        squares += '<div class="sq ' + (light ? 'light' : 'dark') + (name === to ? ' blunder' : '') + '">' +
+          (piece ? '<span class="piece ' + (piece === piece.toUpperCase() ? 'w' : 'b') + '">' +
+            GLYPHS[piece.toLowerCase()] + '</span>' : '') + '</div>';
+      }
+    }
+  }
+  let arrows = '';
+  if (m.fen_before) {
+    if (m.uci && m.uci.length >= 4) arrows += arrowSvg(m.uci, bottomBlack, '#7a7a7a');
+    if (bestUci && bestUci.length >= 4 && bestUci.slice(0, 4) !== m.uci.slice(0, 4))
+      arrows += arrowSvg(bestUci, bottomBlack, '#3a8b1f');
+  }
+  return '<div class="mini-board">' + squares + arrows + '</div>';
+}
+
+function linkedMini(m, bestUci) {
+  const cls = CLS_CLASS[m.classification] || '';
+  return '<a class="mini" href="/viewer?game=' + escAttr(m.game_uuid) + '&ply=' + m.ply + '">' +
+    miniBoardHtml(m, bestUci) +
+    '<div class="meta"><span class="' + cls + '">' + esc(m.classification) + '</span> \u00b7 ' +
+    esc(m.time_class) + ' \u00b7 ' + esc(m.month || '') + '</div></a>';
+}
+
+function openingLabel(m) { return m.opening_name || m.opening_code || 'Unknown opening'; }
+
+// ---- traps: exact same position, 2+ times ----
+function trapGroups() {
+  const by = {};
+  for (const m of DATA.mistakes) {
+    if (!m.fen_before) continue;
+    (by[m.fen_before] = by[m.fen_before] || []).push(m);
+  }
+  return Object.entries(by).filter(([, l]) => l.length >= 2)
+    .sort((a, b) => b[1].length - a[1].length).slice(0, 12);
+}
+
+async function loadAdvice(fen) {
+  if (!(fen in ADVICE)) {
+    try {
+      ADVICE[fen] = await (await fetch('/api/best?fen=' + encodeURIComponent(fen) + '&multipv=3')).json();
+    } catch (err) {
+      ADVICE[fen] = { error: 'request failed — is the server running?' };
+    }
+  }
+  return ADVICE[fen];
+}
+
+function bestOf(advice) {
+  return advice && !advice.error && !advice.game_over && advice.lines.length ? advice.lines[0] : null;
+}
+
+function adviceSentence(motif) {
+  return ADVICE_TEXT[motif] || ADVICE_TEXT.uncategorized;
+}
+
+function renderTraps() {
+  const el = document.getElementById('traps');
+  const groups = trapGroups();
+  if (!groups.length) {
+    el.innerHTML = '<p class="none">No opening position has repeated itself in your games yet — ' +
+      'this section becomes interesting once traps start recurring. Analyze more games!</p>';
+    return;
+  }
+  el.innerHTML = '';
+  groups.forEach(([fen, list], i) => {
+    const worst = [...list].sort((a, b) => b.drop - a.drop)[0];
+    const motifs = worst.motifs.length ? worst.motifs : ['uncategorized'];
+    const openings = [...new Set(list.map(openingLabel))].slice(0, 3);
+    const playedCounts = {};
+    list.forEach(m => { const k = m.san || '?'; (playedCounts[k] = playedCounts[k] || []).push(m.classification); });
+    const playedHtml = Object.entries(playedCounts).map(([san, clss]) => {
+      const cls = CLS_CLASS[clss[0]] || '';
+      return '<span class="' + cls + '">' + esc(san) + '</span>' + (clss.length > 1 ? ' ' + clss.length + '\u00d7' : '');
+    }).join(' and ');
+    const occHtml = list.map(m =>
+      '<a href="/viewer?game=' + escAttr(m.game_uuid) + '&ply=' + m.ply + '">' + esc(m.month || '') + '</a>'
+    ).join(' \u00b7 ');
+    el.insertAdjacentHTML('beforeend',
+      '<div class="trap-card" id="trap-' + i + '" data-fen="' + escAttr(fen) + '">' +
+      '<h3>Same position, <span class="count">' + list.length + '\u00d7</span>' +
+      ' <span class="muted">\u2014 ' + openings.map(esc).join(', ') + '</span>' +
+      '<span class="p-badge" data-badge hidden></span></h3>' +
+      '<div class="trap-body">' +
+      '<div class="trap-left">' +
+      '<div class="mini" data-board>' + miniBoardHtml(worst, '') + '</div>' +
+      '<div class="played">you played: ' + playedHtml + '</div>' +
+      '<div class="occ">dates: ' + occHtml + '</div>' +
+      '</div>' +
+      '<div class="trap-right">' +
+      '<div class="sol loading" data-sol>asking Stockfish for the right move\u2026</div>' +
+      '<div class="practice-btns">' +
+      '<button class="b-practice">&#10003; check yourself</button>' +
+      '<button class="b-solution" hidden>show solution</button>' +
+      '</div>' +
+      '</div></div>' +
+      '<div class="practice-area" data-area hidden></div>' +
+      '</div>');
+    const card = document.getElementById('trap-' + i);
+    fillSolution(card, fen, worst, motifs[0]);
+    card.querySelector('.b-practice').addEventListener('click', () => togglePractice(card, fen, list, motifs[0]));
+    card.querySelector('.b-solution').addEventListener('click', () => revealSolution(card, fen, motifs[0]));
+  });
+}
+
+async function fillSolution(card, fen, example, motif) {
+  const sol = card.querySelector('[data-sol]');
+  const advice = await loadAdvice(fen);
+  const board = card.querySelector('[data-board]');
+  const best = bestOf(advice);
+  if (advice.error) {
+    sol.className = 'sol err';
+    sol.innerHTML = '<span class="sol-head">Stockfish unavailable:</span> ' + esc(advice.error);
+    return;
+  }
+  if (!best) {
+    sol.className = 'sol';
+    sol.innerHTML = '<span class="sol-head">Nothing to play here — the game is already decided.</span>';
+    return;
+  }
+  // arrows on the card's board: played move (gray) vs best move (green)
+  const bBoard = board.querySelector('.mini-board');
+  if (best.uci.slice(0, 4) === example.uci.slice(0, 4)) {
+    bBoard.querySelector('svg')?.remove();  // played = best: replace gray with green
+  }
+  bBoard.insertAdjacentHTML('beforeend',
+    '<svg viewBox="0 0 8 8" preserveAspectRatio="none">' +
+    arrowSvg(best.uci, example.side === 'black', '#3a8b1f') + '</svg>');
+  const sideToMove = example.side === 'white' ? 'w' : 'b';
+  let html = '<div class="sol-head">The best move here is:</div>' +    '<div class="sol-move">' + esc(best.san || '?') +
+    (best.san ? '<span class="san-note">(' + esc(best.uci) + ')</span>' : '') + '</div>' +
+    '<div class="sol-eval">' + esc(evalText(best, sideToMove)) + '</div>';
+  if (advice.lines.length > 1) {
+    html += '<div class="sol-alts">alternatives: ' + advice.lines.slice(1).map(l => {
+      const cp = sideToMove === 'w' ? l.cp : -l.cp;
+      return esc(l.san) + ' ' + (l.mate != null ? (l.mate > 0 ? '+M' + l.mate : '-M' + Math.abs(l.mate)) : cpText(cp));
+    }).join(' \u00b7 ') + '</div>';
+  }
+  html += '<div class="sol-advice"><b>How to avoid this:</b> ' + esc(adviceSentence(motif)) + '</div>';
+  if (advice.engine) html += '<div class="sol-alts muted">' + esc(advice.engine) + '</div>';
+  sol.className = 'sol';
+  sol.innerHTML = html;
+  card.querySelector('.b-solution').hidden = false;
+  const st = PRACTICE[card.id];
+  if (st) st.best = best.uci;  // practice may have started before the advice arrived
+}
+
+// ---- practice mode ----
+function togglePractice(card, fen, list, motif) {
+  const area = card.querySelector('[data-area]');
+  if (!area.hidden) { area.hidden = true; return; }
+  if (!PRACTICE[card.id]) {
+    const advice = ADVICE[fen];
+    PRACTICE[card.id] = {
+      fen, motif,
+      chess: new ChessLib.Chess(fen),
+      best: bestOf(advice) ? bestOf(advice).uci : null,
+      whiteBottom: new ChessLib.Chess(fen).turn() === 'w',
+      sel: null, targets: [], solved: false, shown: false, attempts: 0
+    };
+  }
+  const st = PRACTICE[card.id];
+  area.innerHTML =
+    '<div class="p-wrap">' +
+    '<div class="p-board" data-pboard></div>' +
+    '<div class="p-side">' +
+    '<div class="p-task">Find the best move for ' + (list[0].side) + ' — play it on the board.</div>' +
+    '<div class="p-feedback" data-feedback></div>' +
+    '<div class="p-hint">Click your piece, then click where it should go. ' +
+    (st.attempts ? 'Attempt ' + (st.attempts + 1) + '.' : '') + '</div>' +
+    '</div></div>';
+  area.hidden = false;
+  renderPracticeBoard(card);
+  const board = area.querySelector('[data-pboard]');
+  board.addEventListener('pointerdown', e => {
+    const sqEl = e.target.closest('.sq');
+    if (!sqEl || st.solved) return;
+    e.preventDefault();
+    onPracticeSquare(card, sqEl.dataset.square);
+  });
+}
+
+function onPracticeSquare(card, name) {
+  const st = PRACTICE[card.id];
+  const pos = st.chess;
+  if (selIsTarget(st, name)) {
+    const from = st.sel;
+    const t = st.targets.find(t => t.to === name);
+    st.sel = null; st.targets = [];
+    attemptMove(card, from + name + (t && t.promotion ? 'q' : ''));
+    return;
+  }
+  const piece = pos.get(name);
+  if (piece && piece.color === pos.turn()) {
+    if (st.sel === name) { st.sel = null; st.targets = []; }
+    else { st.sel = name; st.targets = pos.moves({ square: name, verbose: true }); }
+  } else { st.sel = null; st.targets = []; }
+  renderPracticeBoard(card);
+}
+
+function selIsTarget(st, name) {
+  return st.sel && st.targets.some(t => t.to === name);
+}
+
+function attemptMove(card, uci) {
+  const st = PRACTICE[card.id];
+  const feedback = card.querySelector('[data-feedback]');
+  st.attempts++;
+  card.querySelector('.p-hint').textContent = 'Attempt ' + (st.attempts + 1) + '.';
+  const board = card.querySelector('[data-pboard]');
+  const best = st.best;
+  if (best && uci.slice(0, 4) === best.slice(0, 4)) {
+    // apply and mark solved
+    st.chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] || 'q' });
+    st.solved = true;
+    st.solvedUci = uci;
+    renderPracticeBoard(card);
+    feedback.className = 'p-feedback good';
+    feedback.textContent = '\u2714 Correct! That is exactly what Stockfish recommends.';
+    setBadge(card, 'solved', 'solved \u2714');
+    disablePracticeInput(card);
+    return;
+  }
+  // wrong: show what they tried as a red arrow, position stays
+  board.querySelector('svg')?.remove();
+  board.insertAdjacentHTML('beforeend',
+    '<svg viewBox="0 0 8 8" preserveAspectRatio="none">' + arrowSvg(uci, bottomBlackFor(card), '#c23') + '</svg>');
+  feedback.className = 'p-feedback bad';
+  feedback.textContent = '\u2716 Not that one — Stockfish prefers something else here. Try again (or show the solution).';
+}
+
+function bottomBlackFor(card) {
+  const st = PRACTICE[card.id];
+  return st ? !st.whiteBottom : false;
+}
+
+function revealSolution(card, fen, motif) {
+  const area = card.querySelector('[data-area]');
+  if (area.hidden) {  // solution button also opens practice if not open yet
+    card.querySelector('.b-practice').click();
+  }
+  const st = PRACTICE[card.id];
+  if (!st || st.shown) return;
+  if (!st.best) { loadAdvice(fen).then(a => { st.best = bestOf(a) ? bestOf(a).uci : null; revealSolution(card, fen, motif); }); return; }
+  st.shown = true;
+  st.solvedUci = st.best;
+  const feedback = card.querySelector('[data-feedback]');
+  setBadge(card, 'tried', 'shown \u2014 practice it');
+  disablePracticeInput(card);  // re-renders the board with the green solution arrow
+  feedback.className = 'p-feedback';
+  feedback.textContent = 'The solution: the green arrow — plus the reasoning on the right. Come back and try this one from memory next time!';
+}
+
+function disablePracticeInput(card) {
+  const st = PRACTICE[card.id];
+  st.sel = null; st.targets = [];
+  renderPracticeBoard(card);
+}
+
+function setBadge(card, cls, text) {
+  const badge = card.querySelector('[data-badge]');
+  badge.className = 'p-badge ' + cls;
+  badge.textContent = text;
+  badge.hidden = false;
+}
+
+function renderPracticeBoard(card) {
+  const st = PRACTICE[card.id];
+  const board = card.querySelector('[data-pboard]');
+  if (!st || !board) return;
+  const pos = st.chess;
+  const whiteBottom = st.whiteBottom;
+  board.innerHTML = '';
+  let kingSq = null;
+  if (pos.inCheck()) {
+    for (const s of ALL_SQUARES()) { const p = pos.get(s); if (p && p.type === 'k' && p.color === pos.turn()) kingSq = s; }
+  }
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      const file = whiteBottom ? col : 7 - col;
+      const rank = whiteBottom ? 7 - row : row;
+      const name = FILES[file] + (rank + 1);
+      const sq = document.createElement('div');
+      sq.className = 'sq ' + (((file + rank) % 2) ? 'light' : 'dark');
+      sq.dataset.square = name;
+      const piece = pos.get(name);
+      if (piece) {
+        const sp = document.createElement('span');
+        sp.className = 'piece ' + (piece.color === 'w' ? 'w' : 'b');
+        sp.textContent = GLYPHS[piece.type];
+        sq.appendChild(sp);
+      }
+      if (name === st.sel) sq.classList.add('sel');
+      if (name === kingSq) sq.classList.add('checksq');
+      const t = st.targets.find(t => t.to === name);
+      if (t) {
+        sq.classList.add('target');
+        if (t.captured || t.flags.includes('e')) sq.classList.add('capture');
+      }
+      if (rank === (whiteBottom ? 0 : 7)) sq.insertAdjacentHTML('beforeend', '<span class="coord file">' + FILES[file] + '</span>');
+      if (file === (whiteBottom ? 0 : 7)) sq.insertAdjacentHTML('beforeend', '<span class="coord rank">' + (rank + 1) + '</span>');
+      board.appendChild(sq);
+    }
+  }
+  if ((st.solved || st.shown) && st.solvedUci) {
+    board.insertAdjacentHTML('beforeend',
+      '<svg viewBox="0 0 8 8" preserveAspectRatio="none">' + arrowSvg(st.solvedUci, !whiteBottom, '#3a8b1f') + '</svg>');
+  }
+  function ALL_SQUARES() { const out = []; for (let r = 1; r <= 8; r++) for (const f of FILES) out.push(f + r); return out; }
+}
+
+// ---- patterns: same opening + same kind of mistake + same stage ----
+function patternGroups() {
+  const by = {};
+  for (const m of DATA.mistakes) {
+    const bucket = m.ply <= 10 ? 'moves 1\u20135' : 'moves 6\u201310';
+    for (const mo of (m.motifs.length ? m.motifs : ['uncategorized'])) {
+      const k = JSON.stringify([openingLabel(m), mo, bucket]);
+      (by[k] = by[k] || []).push(m);
+    }
+  }
+  return Object.entries(by).filter(([, l]) => l.length >= 3)
+    .sort((a, b) => b[1].length - a[1].length).slice(0, 12);
+}
+
+function renderPatterns() {
+  const el = document.getElementById('patterns');
+  const groups = patternGroups();
+  if (!groups.length) {
+    el.innerHTML = '<p class="none">no opening pattern with 3+ occurrences yet — analyze more games.</p>';
+    return;
+  }
+  el.innerHTML = '';
+  for (const [key, list] of groups) {
+    const [opening, motif, bucket] = JSON.parse(key);
+    const games = new Set(list.map(m => m.game_uuid)).size;
+    const examples = [...list].sort((a, c) => c.drop - a.drop).slice(0, 4).map(m => linkedMini(m, '')).join('');
+    el.insertAdjacentHTML('beforeend',
+      '<div class="pat-block"><h3>' + esc(opening) + ' <span class="muted">(' + list.length +
+      '\u00d7 in ' + games + ' games)</span></h3>' +
+      '<div class="pat-desc">Around ' + esc(bucket) + ': ' + esc(MOTIF_TEXT[motif] || motif) + '.</div>' +
+      '<div class="pat-advice">' + esc(adviceSentence(motif)) + '</div>' +
+      '<div class="examples">' + examples + '</div></div>');
+  }
+}
+
+async function init() {
+  DATA = await (await fetch('/api/opening-mistakes')).json();
+  const n = DATA.mistakes.length;
+  const games = new Set(DATA.mistakes.map(m => m.game_uuid)).size;
+  document.getElementById('summary').textContent =
+    n ? n + ' opening-phase mistakes in ' + games + ' games' : 'no analyzed games yet';
+  if (!n) {
+    document.getElementById('traps').innerHTML = '<p class="empty">run <b>analyze</b> on the pipeline page first</p>';
+    document.getElementById('patterns').innerHTML = '';
+    return;
+  }
+  renderTraps();
+  renderPatterns();
+}
+init();
+</script>
+</body>
+</html>

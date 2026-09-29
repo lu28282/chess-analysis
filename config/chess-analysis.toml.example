@@ -1,0 +1,36 @@
+# chess-analysis configuration (copy to chess-analysis.toml and edit)
+username = "your-username"
+db_path = "/app/data/chess-analysis.db"
+user_agent = "chess-analysis (github.com/you)"
+reports_dir = "/app/reports"
+# Stockfish binary inside the container; override to run outside Docker
+engine_path = "/usr/games/stockfish"
+# Analysis budget: ~1s/position by default; eval_depth overrides time when > 0
+eval_ms = 1000
+eval_depth = 0
+# Parallel game analysis: each worker runs its own Stockfish process and
+# writes to SQLite (WAL). Keep workers * threads <= your core count.
+# workers = 4
+# threads = 1
+# hash_mb = 256
+# Classification thresholds in win% drop points (chess.com-style); tune freely:
+# [thresholds]
+# brilliant = 0.0   # pawns-ahead cutoff for engine-best sacrifices
+# best = 0.6
+# good = 5.0
+# inaccuracy = 10.0
+# mistake = 20.0
+# blunder = 40.0
+
+# Reference opening book (Story 6). `build-opening-book` queries the lichess
+# opening explorer (rate-limited); `--source local` instead builds the book
+# offline from the games already in the DB.
+# [explorer]
+# endpoint = "https://explorer.lichess.ovh/lichess"
+# max_ply = 12       # book depth in plies
+# min_games = 20     # drop explorer branches below this popularity
+# top_moves = 12    # explorer moves fetched per position
+# delay_ms = 700    # politeness delay between explorer requests
+# max_positions = 600  # hard cap on explorer requests per opening
+
+# NOTE: paths above are container paths; ./data, ./config, ./reports are bind-mounted.

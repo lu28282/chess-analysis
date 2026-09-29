@@ -1,0 +1,49 @@
+# Long-running web UI: docker compose up opens http://localhost:8000 with all
+# pipeline steps runnable from the browser.
+#
+# One-shot jobs also work directly:
+#   docker compose run fetch
+#   docker compose run analyze analyze --limit 10
+#   docker compose run report-mistakes report-mistakes --output x.html
+x-chess: &chess
+  build: .
+  image: chess-analysis
+  environment:
+    CHESS_ANALYSIS_CONFIG: /config/chess-analysis.toml
+  volumes:
+    - ./data:/app/data
+    - ./config:/config:ro
+    - ./reports:/app/reports
+
+services:
+  web:
+    <<: *chess
+    command: serve
+    ports:
+      - "8000:8000"
+
+  fetch:
+    <<: *chess
+    profiles: [cli]
+    command: fetch
+
+  analyze:
+    <<: *chess
+    profiles: [cli]
+    command: analyze
+    # pass extra args: docker compose run analyze --limit 10
+
+  report-mistakes:
+    <<: *chess
+    profiles: [cli]
+    command: report-mistakes
+
+  report-openings:
+    <<: *chess
+    profiles: [cli]
+    command: report-openings
+
+  build-opening-book:
+    <<: *chess
+    profiles: [cli]
+    command: build-opening-book

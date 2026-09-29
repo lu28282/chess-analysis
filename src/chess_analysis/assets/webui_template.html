@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>chess-analysis</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 900px; padding: 2rem 1rem; color: #222; }
+  h1 { font-size: 1.5rem; }
+  .muted { color: #777; font-size: .85rem; }
+  .kpis { display: flex; gap: .6rem; flex-wrap: wrap; margin: 1rem 0 1.5rem; }
+  .kpi { background: #eef; border-radius: 8px; padding: .6rem 1.1rem; }
+  .kpi b { font-size: 1.4rem; display: block; }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: .8rem; margin-bottom: 1.5rem; }
+  .step { border: 1px solid #ddd; border-radius: 8px; padding: .8rem 1rem; background: #fafafa; }
+  .step h3 { margin: 0 0 .3rem; font-size: 1rem; }
+  .step p { margin: 0 0 .6rem; font-size: .8rem; color: #666; min-height: 2.2em; }
+  .step button { padding: .4rem .9rem; border: none; border-radius: 6px; background: #4a7fb5; color: #fff; cursor: pointer; }
+  .step button:disabled { background: #9aa8b8; cursor: not-allowed; }
+  #job { border: 1px solid #ddd; border-radius: 8px; padding: .8rem 1rem; margin-bottom: 1rem; background: #fff; }
+  #log { background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: .78rem;
+         border-radius: 8px; padding: .8rem 1rem; white-space: pre-wrap; max-height: 320px; overflow-y: auto; }
+  #reports a { color: #4a7fb5; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #ddd; padding: .35rem .6rem; text-align: left; font-size: .9rem; }
+  th { background: #f0f0f0; }
+  .ok { color: #2a7a2a; font-weight: 600; } .err { color: #b03030; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>chess-analysis</h1>
+<p class="muted">Personal pipeline: fetch &rarr; build opening book &rarr; analyze &rarr; reports. One step runs at a time; <code>analyze</code> is resumable.</p>
+<p><a href="/viewer" style="font-weight:600">&#9822; Game viewer — replay your games on a chessboard, step through mistakes, explore variations</a></p>
+<p><a href="/insights" style="font-weight:600">&#128202; Mistake insights — your mistake patterns, explained visually without notation</a></p>
+<p><a href="/openings" style="font-weight:600">&#128018; Opening blunders — the traps you keep falling into, with solutions and practice</a></p>
+
+<div class="kpis">
+  <span class="kpi"><b id="k-games">–</b>games stored</span>
+  <span class="kpi"><b id="k-analyzed">–</b>analyzed</span>
+  <span class="kpi"><b id="k-book">–</b>book positions</span>
+</div>
+
+<div class="steps" id="steps"></div>
+
+<div id="job" hidden>
+  <h3 style="margin:0 0 .4rem" id="job-title"></h3>
+  <pre id="log"></pre>
+</div>
+
+<div id="reports">
+  <h2 style="font-size:1.1rem">Reports</h2>
+  <div id="reports-body"><p class="muted">none yet — run the report steps above</p></div>
+</div>
+
+<script>
+const stepsOrder = ["fetch", "sync-parsed", "build-opening-book", "analyze", "report-mistakes", "report-openings"];
+const stepsEl = document.getElementById('steps');
+
+async function refresh() {
+  let s;
+  try { s = await (await fetch('/api/status')).json(); }
+  catch { setTimeout(refresh, 2000); return; }
+
+  document.getElementById('k-games').textContent = s.stats.games == null ? '–' : s.stats.games;
+  document.getElementById('k-analyzed').textContent = s.stats.analyzed == null ? '–' : s.stats.analyzed;
+  document.getElementById('k-book').textContent = s.stats.book == null ? '–' : s.stats.book;
+
+  const running = s.job && !s.job.done ? s.job.step : null;
+  stepsEl.innerHTML = stepsOrder.map(step =>
+    '<div class="step"><h3>' + step + '</h3><p>' + esc(s.steps[step] || '') + '</p>' +
+    '<button ' + (running ? 'disabled' : '') + ' onclick="run(\'' + step + '\')">' +
+    (running === step ? 'running…' : 'Run') + '</button></div>').join('');
+
+  const jobEl = document.getElementById('job');
+  const logEl = document.getElementById('log');
+  if (s.job && (running || (s.job.step && logEl.textContent))) {
+    jobEl.hidden = false;
+    const rc = s.job.done ? s.job.returncode : null;
+    document.getElementById('job-title').innerHTML =
+      esc(s.job.step) + ' — ' +
+      (running ? 'running…' : (rc === 0 ? '<span class="ok">finished OK</span>' : '<span class="err">failed (exit ' + rc + ')</span>'));
+    const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+    logEl.textContent = s.log || '(no output yet)';
+    if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  const body = document.getElementById('reports-body');
+  if (s.reports.length) {
+    body.innerHTML = '<table><thead><tr><th>Report</th><th>Size</th><th>Generated</th></tr></thead><tbody>' +
+      s.reports.map(r => '<tr><td><a href="' + r.url + '" target="_blank">' + esc(r.name) + '</a></td><td>' +
+        r.size_kb + ' KB</td><td>' + new Date(r.mtime * 1000).toLocaleString() + '</td></tr>').join('') +
+      '</tbody></table>';
+  }
+  setTimeout(refresh, running ? 1500 : 4000);
+}
+
+async function run(step) {
+  const resp = await fetch('/api/run/' + step, { method: 'POST' });
+  const data = await resp.json();
+  if (!data.ok) alert(data.message);
+  refresh();
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+
+refresh();
+</script>
+</body>
+</html>

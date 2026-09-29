@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Openings — {{username}}</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 1200px; color: #222; }
+  h1 { font-size: 1.6rem; } h2 { font-size: 1.25rem; margin-top: 2rem; border-bottom: 2px solid #ddd; padding-bottom: .3rem;}
+  h3 { font-size: 1.05rem; }
+  .card { background: #fafafa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 1rem; margin: .8rem 0; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1.5rem; }
+  th, td { border: 1px solid #ddd; padding: .35rem .6rem; text-align: left; font-size: .9rem; }
+  th { background: #f0f0f0; }
+  .muted { color: #777; font-size: .85rem; }
+  .none { color: #999; font-style: italic; }
+  .good { color: #2a7a2a; font-weight: 600; } .bad { color: #b03030; font-weight: 600; }
+  .kpi { display: inline-block; background: #eef; border-radius: 8px; padding: .6rem 1.1rem; margin: .3rem .6rem .3rem 0; }
+  .kpi b { font-size: 1.3rem; display: block; }
+  .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
+  code { background: #f4f4f4; padding: .1rem .3rem; border-radius: 4px; }
+</style>
+<script>{{chartjs}}</script>
+</head>
+<body>
+<h1>Opening coach — {{username}}</h1>
+<p class="muted">Generated {{generated_at}} · offline report · reference book:
+  <span id="book-source"></span></p>
+
+<div id="summary"></div>
+
+<div id="sections"></div>
+
+<script id="data-json" type="application/json">{{data_json}}</script>
+<script>
+const DATA = JSON.parse(document.getElementById('data-json').textContent);
+function esc(s) { const d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+function pct(c) { return c == null ? '—' : c + '%'; }
+function nn(v) { return v == null ? '—' : v; }
+
+function kpi(label, value) {
+  return '<span class="kpi"><b>' + esc(value) + '</b>' + esc(label) + '</span>';
+}
+
+function tallyCell(s) {
+  const cls = s.score_pct >= 55 ? 'good' : s.score_pct <= 45 ? 'bad' : '';
+  return '<td class="' + cls + '">' + esc(s.win) + ' / ' + esc(s.loss) + ' / ' + esc(s.draw) +
+    ' <span class="muted">(' + pct(s.score_pct) + ')</span></td>';
+}
+
+function sectionHtml(sec) {
+  let h = '<h2>' + esc(sec.label) + '</h2>';
+  h += '<p class="muted">' + esc(sec.description) + '</p>';
+  h += '<div>' +
+    kpi('games', sec.games_count) +
+    kpi('distinct variations', sec.variation_count) +
+    kpi('I left the book', sec.off_by_me) +
+    kpi('opponent left the book', sec.off_by_opponent) +
+    '</div>';
+  h += '<div class="card"><h3>Reference mainline (most-played book moves)</h3><p><code>' +
+    esc(sec.mainline.join(' ')) + '</code></p></div>';
+
+  // per-variation drill-down
+  h += '<h3>Variations (first book-depth moves, W/L/D from my perspective)</h3>';
+  if (!sec.variations.length) h += '<p class="none">no games in this opening</p>';
+  else {
+    h += '<table><thead><tr><th>Variation</th><th>Games</th><th>W/L/D</th><th>My acc</th><th>Opp acc</th>' +
+      '<th>My 1st slip (ply)</th><th>Opp 1st slip (ply)</th><th>Avg book-off ply</th><th>Book-offs by me</th></tr></thead><tbody>';
+    for (const v of sec.variations) {
+      h += '<tr><td><code>' + esc(v.variation) + '</code></td><td>' + esc(v.games) + '</td>' +
+        '<td>' + esc(v.win) + ' / ' + esc(v.loss) + ' / ' + esc(v.draw) + '</td>' +
+        '<td>' + nn(v.my_accuracy) + '</td><td>' + nn(v.opp_accuracy) + '</td>' +
+        '<td>' + nn(v.first_soft_mine) + '</td><td>' + nn(v.first_soft_opp) + '</td>' +
+        '<td>' + nn(v.book_off_ply) + '</td><td>' + esc(v.off_by_me) + '</td></tr>';
+    }
+    h += '</tbody></table>';
+  }
+
+  // opponent lines
+  h += '<h3>Opponent lines (their first moves) — where do I score worst?</h3>';
+  if (!sec.opponent_lines.length) h += '<p class="none">no games</p>';
+  else {
+    h += '<table><thead><tr><th>Line</th><th>Games</th><th>W/L/D (score)</th><th>My acc</th><th>Avg book-off ply</th>' +
+      '<th>Opp off-book punished</th><th>not punished</th></tr></thead><tbody>';
+    for (const o of sec.opponent_lines) {
+      h += '<tr><td><code>' + esc(o.line) + '</code></td><td>' + esc(o.games) + '</td>' + tallyCell(o) +
+        '<td>' + nn(o.my_accuracy) + '</td><td>' + nn(o.avg_off_ply) + '</td>' +
+        '<td>' + esc(o.punished) + '</td><td>' + esc(o.unpunished) + '</td></tr>';
+    }
+    h += '</tbody></table>';
+  }
+
+  // failed punishments
+  h += '<h3>Opponent left the book but I failed to punish</h3>';
+  if (!sec.failed_punish.length) h += '<p class="none">nothing to show — good (or no analysis data)</p>';
+  else {
+    h += '<p class="muted">Opponent went off-book and did not blunder within 6 plies. Drill these.</p>';
+    h += '<table><thead><tr><th>Game</th><th>Off ply</th><th>Move</th><th>My accuracy</th></tr></thead><tbody>';
+    for (const f of sec.failed_punish) {
+      h += '<tr><td><code>' + esc(f.uuid) + '</code></td><td>' + esc(f.off_ply) + '</td><td>' + esc(f.san) +
+        '</td><td>' + nn(f.my_accuracy) + '</td></tr>';
+    }
+    h += '</tbody></table>';
+  }
+
+  // repertoire gaps
+  h += '<h3>Repertoire gaps — book lines I have never faced</h3>';
+  if (!sec.gaps.length) {
+    h += DATA.book_source === 'local'
+      ? '<p class="none">gap detection needs a reference book — a book built from your own games covers exactly the lines you already played (rebuild with <code>--source lichess</code> once the explorer API is reachable)</p>'
+      : '<p class="none">no unfaced popular book lines (or no book built yet)</p>';
+  } else {
+    h += '<table><thead><tr><th>Line</th><th>Branch move</th><th>Ply</th><th>Book games</th></tr></thead><tbody>';
+    for (const g of sec.gaps) {
+      h += '<tr><td><code>' + esc(g.path) + '</code></td><td>' + esc(g.move_san) + '</td><td>' + esc(g.ply) +
+        '</td><td>' + esc(g.total_games) + '</td></tr>';
+    }
+    h += '</tbody></table>';
+  }
+
+  // score chart per opponent line (top 12)
+  const lines = sec.opponent_lines.slice(0, 12);
+  if (lines.length) {
+    h += '<div class="chart-grid"><div class="card"><h3>My score per opponent line (%)</h3>' +
+      '<canvas id="chart-' + esc(sec.label) + '"></canvas></div></div>';
+  }
+  return { html: h, lines };
+}
+
+const summary = document.getElementById('summary');
+const cc = DATA.class_counts || {};
+const src = DATA.book_source === 'lichess' ? 'lichess opening explorer (reference data)'
+  : DATA.book_source === 'local' ? 'your own games (offline fallback — book-leaving detection is only as rich as your corpus; rebuild with --source lichess once the explorer is reachable)'
+  : DATA.book_source === 'none' ? 'not built yet — run `build-opening-book`'
+  : 'mixed';
+document.getElementById('book-source').textContent = src;
+summary.innerHTML =
+  kpi('Jobava London', cc.jobava_london || 0) +
+  kpi('Jobava avoided', cc.jobava_avoided || 0) +
+  kpi('Caro-Kann', cc.caro_kann || 0) +
+  kpi('Caro avoided', cc.caro_avoided || 0) +
+  kpi('Other openings', cc.other || 0);
+
+const sections = document.getElementById('sections');
+for (const key of ['jobava', 'caro_kann']) {
+  const out = sectionHtml(DATA[key]);
+  const wrap = document.createElement('div');
+  wrap.innerHTML = out.html;
+  sections.appendChild(wrap);
+  if (out.lines.length) {
+    const ctx = wrap.querySelector('canvas');
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: out.lines.map(l => l.line || '(start)'),
+        datasets: [{ data: out.lines.map(l => l.score_pct), backgroundColor: '#4a7fb5' }]
+      },
+      options: { plugins: { legend: { display: false } },
+        scales: { y: { min: 0, max: 100 } }, responsive: true }
+    });
+  }
+}
+</script>
+</body>
+</html>
