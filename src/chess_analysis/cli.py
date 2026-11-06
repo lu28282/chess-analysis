@@ -1,4 +1,4 @@
-"""Typer CLI: fetch, sync-parsed, analyze, report-mistakes, report-openings, build-opening-book."""
+"""Typer CLI: fetch, sync-parsed, analyze, report-mistakes, report-openings, build-opening-book, setup, serve."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Optional
 
 import typer
 
-from .config import load_config
+from .config import load_config, validate_since
 from .db import open_db
 
 app = typer.Typer(add_completion=False, help="Personal chess game analysis tool.")
@@ -18,7 +18,14 @@ CONFIG_OPT = typer.Option(
     "-c",
     envvar="CHESS_ANALYSIS_CONFIG",
     help="Path to the TOML config file.",
-    exists=True,
+)
+# serve must start even without a config (it shows the setup wizard), so no exists=True
+CONFIG_OPT_CREATE = typer.Option(
+    CONFIG_OPT.default,
+    "--config",
+    "-c",
+    envvar="CHESS_ANALYSIS_CONFIG",
+    help="Path to the TOML config file (created by the setup wizard if missing).",
 )
 VERBOSE_OPT = typer.Option(False, "--verbose", "-v", help="Debug logging.")
 
@@ -30,19 +37,81 @@ def _setup(verbose: bool) -> None:
     )
 
 
+def _load_or_exit(config_path: Path):
+    """load_config with an actionable error instead of a raw traceback."""
+    try:
+        return load_config(config_path)
+    except FileNotFoundError:
+        typer.secho(
+            f"config file not found: {config_path}\n"
+            "  - quick start: `chess-analysis setup` (interactive helper), or\n"
+            "  - copy config/chess-analysis.toml.example to that path and set `username`, or\n"
+            "  - run the web UI (`docker compose up`) and use its setup wizard at /setup",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+    except ValueError as exc:
+        typer.secho(f"invalid config {config_path}: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def setup(
+    username: Optional[str] = typer.Option(None, "--username", "-u", help="chess.com username (prompted if omitted)."),
+    config_path: Path = CONFIG_OPT_CREATE,
+    verbose: bool = VERBOSE_OPT,
+) -> None:
+    """Create the config file interactively (no-op if it already validates)."""
+    _setup(verbose)
+    from .settings import update_settings
+
+    if config_path.exists():
+        try:
+            load_config(config_path)
+            typer.echo(f"config already exists and validates: {config_path}")
+            return
+        except (FileNotFoundError, ValueError):
+            typer.echo("existing config is incomplete — completing it")
+    while not (username and username.strip()):
+        username = typer.prompt("chess.com username")
+    try:
+        update_settings(config_path, {"username": username.strip()})
+    except (ValueError, OSError) as exc:
+        typer.secho(f"could not write config {config_path}: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    typer.echo(f"config written: {config_path} — next: fetch your games or run `serve`")
+
+
 @app.command()
 def fetch(
+    months: Optional[int] = typer.Option(
+        None, "--months", "-m", min=0, help="Only fetch the newest N monthly archives."
+    ),
+    since: Optional[str] = typer.Option(
+        None, "--since", help="Only fetch archives from this month on (YYYY-MM or YYYY-MM-DD)."
+    ),
+    max_games: Optional[int] = typer.Option(
+        None, "--max-games", "-g", min=0, help="Stop after roughly N new games (month-granular)."
+    ),
     config_path: Path = CONFIG_OPT,
     verbose: bool = VERBOSE_OPT,
 ) -> None:
-    """Incrementally download all games of the configured username into SQLite."""
+    """Incrementally download the configured user's games into SQLite.
+
+    Window limits default to the config's [fetch] settings; 0 / empty = all games.
+    """
     _setup(verbose)
     from .pipeline import run_fetch
 
-    cfg = load_config(config_path)
+    try:
+        since = validate_since(since) if since else None
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    cfg = _load_or_exit(config_path)
     conn = open_db(cfg.db_path)
     try:
-        stats = run_fetch(conn, cfg)
+        stats = run_fetch(conn, cfg, months=months, since=since, max_games=max_games)
         typer.echo(
             f"fetch complete: {stats.months_fetched} months fetched, "
             f"{stats.months_304} unchanged (304), {stats.games_stored} games stored"
@@ -61,7 +130,7 @@ def sync_parsed(
     _setup(verbose)
     from .ingestion import sync_parsed as _sync
 
-    cfg = load_config(config_path)
+    cfg = _load_or_exit(config_path)
     conn = open_db(cfg.db_path)
     try:
         parsed, errors = _sync(conn, cfg, only_uuids=list(uuids) if uuids else None)
@@ -79,8 +148,8 @@ def analyze(
         None,
         "--workers",
         "-w",
-        min=1,
-        help="Analyze N games in parallel, each with its own Stockfish process (overrides config).",
+        min=0,
+        help="Analyze N games in parallel, each with its own Stockfish process (overrides config; 0 = auto = one per CPU core).",
     ),
     config_path: Path = CONFIG_OPT,
     verbose: bool = VERBOSE_OPT,
@@ -89,7 +158,7 @@ def analyze(
     _setup(verbose)
     from .analysis import run_analyze
 
-    cfg = load_config(config_path)
+    cfg = _load_or_exit(config_path)
     conn = open_db(cfg.db_path)
     try:
         if game and not conn.execute(
@@ -115,7 +184,7 @@ def report_mistakes(
     _setup(verbose)
     from .report_mistakes import generate_report
 
-    cfg = load_config(config_path)
+    cfg = _load_or_exit(config_path)
     conn = open_db(cfg.db_path)
     try:
         path = generate_report(conn, cfg, output)
@@ -137,7 +206,7 @@ def build_opening_book(
     """Build the reference opening book (one-time, then reports are offline)."""
     _setup(verbose)
 
-    cfg = load_config(config_path)
+    cfg = _load_or_exit(config_path)
     conn = open_db(cfg.db_path)
     try:
         if source == "lichess":
@@ -175,6 +244,12 @@ def build_opening_book(
 @app.command()
 def report_openings(
     output: Path = typer.Option(None, "--output", "-o", help="Output HTML file."),
+    time_class: Optional[str] = typer.Option(
+        None,
+        "--time-class",
+        "-t",
+        help="Restrict the report to one game mode (bullet/blitz/rapid/daily); default: the configured ui.default_time_class.",
+    ),
     config_path: Path = CONFIG_OPT,
     verbose: bool = VERBOSE_OPT,
 ) -> None:
@@ -182,10 +257,13 @@ def report_openings(
     _setup(verbose)
     from .report_openings import generate_report
 
-    cfg = load_config(config_path)
+    if time_class is not None and time_class not in ("bullet", "blitz", "rapid", "daily"):
+        typer.secho(f"unknown time class: {time_class!r} (bullet/blitz/rapid/daily)", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    cfg = _load_or_exit(config_path)
     conn = open_db(cfg.db_path)
     try:
-        path = generate_report(conn, cfg, output)
+        path = generate_report(conn, cfg, output, time_class=time_class)
         typer.echo(f"report written: {path}")
     finally:
         conn.close()
@@ -195,10 +273,13 @@ def report_openings(
 def serve(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind address for the web UI."),
     port: int = typer.Option(8000, "--port", help="Port for the web UI."),
-    config_path: Path = CONFIG_OPT,
+    config_path: Path = CONFIG_OPT_CREATE,
     verbose: bool = VERBOSE_OPT,
 ) -> None:
-    """Start the web UI: run pipeline steps and view reports from the browser."""
+    """Start the web UI: run pipeline steps, view reports, edit settings.
+
+    Without a config file the UI shows a first-run setup wizard.
+    """
     _setup(verbose)
     from .webui import serve as webui_serve
 

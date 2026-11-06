@@ -108,6 +108,14 @@
   <a href="/">&larr; pipeline</a>
   <a href="/insights">&#128202; mistake insights</a>
   <a href="/viewer">&#9822; game viewer</a>
+  <label style="font-size:.8rem;color:#555">time class
+    <select id="f-tc" style="padding:.15rem">
+      <option value="">all</option>
+      <option value="bullet">bullet</option>
+      <option value="blitz">blitz</option>
+      <option value="rapid">rapid</option>
+      <option value="daily">daily</option>
+    </select></label>
   <span class="muted" id="summary"></span>
 </header>
 
@@ -159,7 +167,7 @@ const ADVICE_TEXT = {
 
 let DATA = null;
 const ADVICE = {};   // fen -> /api/best payload
-const PRACTICE = {}; // trapId -> { chess, sel, targets, solved, shown, attempts }
+const PRACTICE = {}; // trap FEN -> { chess, sel, targets, solved, shown, attempts } (FEN-keyed: stable across filter re-renders)
 
 function esc(s) { const d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
 function escAttr(s) { return esc(s).replace(/"/g, '&quot;'); }
@@ -254,10 +262,17 @@ function linkedMini(m, bestUci) {
 
 function openingLabel(m) { return m.opening_name || m.opening_code || 'Unknown opening'; }
 
+// ---- time-class filter (story 12): mistakes under the current selection ----
+function tcFilter() { return document.getElementById('f-tc').value; }
+function mistakes() {
+  const tc = tcFilter();
+  return tc ? DATA.mistakes.filter(m => m.time_class === tc) : DATA.mistakes;
+}
+
 // ---- traps: exact same position, 2+ times ----
 function trapGroups() {
   const by = {};
-  for (const m of DATA.mistakes) {
+  for (const m of mistakes()) {
     if (!m.fen_before) continue;
     (by[m.fen_before] = by[m.fen_before] || []).push(m);
   }
@@ -371,7 +386,7 @@ async function fillSolution(card, fen, example, motif) {
   sol.className = 'sol';
   sol.innerHTML = html;
   card.querySelector('.b-solution').hidden = false;
-  const st = PRACTICE[card.id];
+  const st = PRACTICE[card.dataset.fen];
   if (st) st.best = best.uci;  // practice may have started before the advice arrived
 }
 
@@ -379,9 +394,9 @@ async function fillSolution(card, fen, example, motif) {
 function togglePractice(card, fen, list, motif) {
   const area = card.querySelector('[data-area]');
   if (!area.hidden) { area.hidden = true; return; }
-  if (!PRACTICE[card.id]) {
+  if (!PRACTICE[card.dataset.fen]) {
     const advice = ADVICE[fen];
-    PRACTICE[card.id] = {
+    PRACTICE[card.dataset.fen] = {
       fen, motif,
       chess: new ChessLib.Chess(fen),
       best: bestOf(advice) ? bestOf(advice).uci : null,
@@ -389,7 +404,7 @@ function togglePractice(card, fen, list, motif) {
       sel: null, targets: [], solved: false, shown: false, attempts: 0
     };
   }
-  const st = PRACTICE[card.id];
+  const st = PRACTICE[card.dataset.fen];
   area.innerHTML =
     '<div class="p-wrap">' +
     '<div class="p-board" data-pboard></div>' +
@@ -411,7 +426,7 @@ function togglePractice(card, fen, list, motif) {
 }
 
 function onPracticeSquare(card, name) {
-  const st = PRACTICE[card.id];
+  const st = PRACTICE[card.dataset.fen];
   const pos = st.chess;
   if (selIsTarget(st, name)) {
     const from = st.sel;
@@ -433,7 +448,7 @@ function selIsTarget(st, name) {
 }
 
 function attemptMove(card, uci) {
-  const st = PRACTICE[card.id];
+  const st = PRACTICE[card.dataset.fen];
   const feedback = card.querySelector('[data-feedback]');
   st.attempts++;
   card.querySelector('.p-hint').textContent = 'Attempt ' + (st.attempts + 1) + '.';
@@ -460,7 +475,7 @@ function attemptMove(card, uci) {
 }
 
 function bottomBlackFor(card) {
-  const st = PRACTICE[card.id];
+  const st = PRACTICE[card.dataset.fen];
   return st ? !st.whiteBottom : false;
 }
 
@@ -469,7 +484,7 @@ function revealSolution(card, fen, motif) {
   if (area.hidden) {  // solution button also opens practice if not open yet
     card.querySelector('.b-practice').click();
   }
-  const st = PRACTICE[card.id];
+  const st = PRACTICE[card.dataset.fen];
   if (!st || st.shown) return;
   if (!st.best) { loadAdvice(fen).then(a => { st.best = bestOf(a) ? bestOf(a).uci : null; revealSolution(card, fen, motif); }); return; }
   st.shown = true;
@@ -482,7 +497,7 @@ function revealSolution(card, fen, motif) {
 }
 
 function disablePracticeInput(card) {
-  const st = PRACTICE[card.id];
+  const st = PRACTICE[card.dataset.fen];
   st.sel = null; st.targets = [];
   renderPracticeBoard(card);
 }
@@ -495,7 +510,7 @@ function setBadge(card, cls, text) {
 }
 
 function renderPracticeBoard(card) {
-  const st = PRACTICE[card.id];
+  const st = PRACTICE[card.dataset.fen];
   const board = card.querySelector('[data-pboard]');
   if (!st || !board) return;
   const pos = st.chess;
@@ -542,7 +557,7 @@ function renderPracticeBoard(card) {
 // ---- patterns: same opening + same kind of mistake + same stage ----
 function patternGroups() {
   const by = {};
-  for (const m of DATA.mistakes) {
+  for (const m of mistakes()) {
     const bucket = m.ply <= 10 ? 'moves 1\u20135' : 'moves 6\u201310';
     for (const mo of (m.motifs.length ? m.motifs : ['uncategorized'])) {
       const k = JSON.stringify([openingLabel(m), mo, bucket]);
@@ -574,19 +589,36 @@ function renderPatterns() {
   }
 }
 
-async function init() {
-  DATA = await (await fetch('/api/opening-mistakes')).json();
-  const n = DATA.mistakes.length;
-  const games = new Set(DATA.mistakes.map(m => m.game_uuid)).size;
-  document.getElementById('summary').textContent =
-    n ? n + ' opening-phase mistakes in ' + games + ' games' : 'no analyzed games yet';
+function renderAll() {
+  const list = mistakes();
+  const n = list.length;
   if (!n) {
-    document.getElementById('traps').innerHTML = '<p class="empty">run <b>analyze</b> on the pipeline page first</p>';
+    const emptyMsg = DATA.mistakes.length
+      ? 'no opening-phase mistakes match the selected time class'
+      : 'no analyzed games yet';
+    document.getElementById('summary').textContent = emptyMsg;
+    document.getElementById('traps').innerHTML = '<p class="empty">' +
+      (DATA.mistakes.length ? 'nothing matches this time class — pick another one above' :
+        'run <b>analyze</b> on the pipeline page first') + '</p>';
     document.getElementById('patterns').innerHTML = '';
     return;
   }
+  const games = new Set(list.map(m => m.game_uuid)).size;
+  document.getElementById('summary').textContent =
+    n + ' opening-phase mistakes in ' + games + ' games';
   renderTraps();
   renderPatterns();
+}
+
+async function init() {
+  DATA = await (await fetch('/api/opening-mistakes')).json();
+  // preselect the default time-class filter from the settings
+  try {
+    const s = await (await fetch('/api/status')).json();
+    if (s.config && s.config.default_time_class) document.getElementById('f-tc').value = s.config.default_time_class;
+  } catch (e) { /* cosmetic default only */ }
+  document.getElementById('f-tc').addEventListener('change', renderAll);
+  renderAll();
 }
 init();
 </script>

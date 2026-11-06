@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>chess-analysis — setup</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 520px; padding: 3rem 1rem; color: #222; }
+  h1 { font-size: 1.5rem; }
+  .muted { color: #777; font-size: .85rem; }
+  label { display: block; margin: 1rem 0 .3rem; font-weight: 600; }
+  input { width: 100%; padding: .5rem .7rem; border: 1px solid #bbb; border-radius: 6px; font-size: 1rem; box-sizing: border-box; }
+  button { margin-top: 1.2rem; padding: .5rem 1.2rem; border: none; border-radius: 6px; background: #4a7fb5; color: #fff; font-size: 1rem; cursor: pointer; }
+  button:disabled { background: #9aa8b8; cursor: not-allowed; }
+  .err { color: #b03030; margin-top: .8rem; font-weight: 600; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<h1>Welcome to chess-analysis</h1>
+<p class="muted">One step to get started: your chess.com username. Everything else has
+sane defaults you can change later on the <a href="/settings">settings page</a>.</p>
+<p class="muted" id="why" hidden></p>
+
+<form id="wizard">
+  <label for="username">chess.com username</label>
+  <input id="username" name="username" autocomplete="off" autofocus placeholder="e.g. hikaru">
+  <button type="submit" id="save">Save and start</button>
+  <div class="err" id="err"></div>
+</form>
+
+<script>
+fetch('/api/settings').then(r => r.json()).then(s => {
+  if (s.config_error && !s.setup_required) {
+    const why = document.getElementById('why');
+    why.hidden = false;
+    why.textContent = s.config_error + ' — fix the username below to repair the config.';
+  }
+  if (s.config && s.config.username) document.getElementById('username').value = s.config.username;
+});
+document.getElementById('wizard').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const username = document.getElementById('username').value.trim();
+  const err = document.getElementById('err');
+  if (!username) { err.textContent = 'Please enter a username.'; return; }
+  const button = document.getElementById('save');
+  button.disabled = true;
+  try {
+    const resp = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username })
+    });
+    const data = await resp.json();
+    if (data.ok) { location.href = '/'; return; }
+    err.textContent = data.error || 'saving failed';
+  } catch (e) { err.textContent = String(e); }
+  button.disabled = false;
+});
+</script>
+</body>
+</html>

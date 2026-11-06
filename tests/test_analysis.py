@@ -420,3 +420,88 @@ def test_blunders_carry_motif_metadata(config, db, monkeypatch):
     assert "material_balance" in meta
     assert "clock_s" in meta
     assert meta["clock_s"] is not None  # %clk annotations were present
+
+
+# --------------------------------------------- stories 11: workers + progress
+
+def test_run_analyze_workers_zero_means_auto(config, db, monkeypatch):
+    """workers=0 (the default) auto-detects the core count; explicit values win."""
+    import os
+
+    import chess_analysis.analysis as analysis_mod
+
+    db.execute(
+        """INSERT INTO games (uuid, month, end_time, pgn, white, black, result, time_class, rules)
+           VALUES ('w1', '2024/04', 1714500000, ?, 'testuser', 'opponent', '1-0', 'rapid', 'chess')""",
+        (STUB_PGN,),
+    )
+    db.commit()
+
+    class Dummy(StubEngine):
+        def evaluate(self, board, **kw):
+            return [{"cp": 20, "mate": None, "pv": []}]
+
+    spawned = []
+    monkeypatch.setattr(analysis_mod, "Engine", lambda *a, **k: spawned.append(Dummy()) or spawned[-1])
+    config.workers = 0
+    monkeypatch.setattr("os.cpu_count", lambda: 4)
+    assert config.resolved_workers == 4
+    assert run_analyze(db, config) == 1
+    # parallel path: probe engine + 1 worker (only one game)
+    assert len(spawned) == 2
+
+
+def test_run_analyze_logs_progress_with_eta(config, db, monkeypatch, caplog):
+    import logging
+
+    import chess_analysis.analysis as analysis_mod
+
+    for i in range(2):
+        db.execute(
+            """INSERT INTO games (uuid, month, end_time, pgn, white, black, result, time_class, rules)
+               VALUES (?, '2024/04', 1714500000 + ?, ?, 'testuser', 'opponent', '1-0', 'rapid', 'chess')""",
+            (f"p{i}", i, STUB_PGN),
+        )
+    db.commit()
+
+    class Dummy(StubEngine):
+        def evaluate(self, board, **kw):
+            return [{"cp": 20, "mate": None, "pv": []}]
+
+    monkeypatch.setattr(analysis_mod, "Engine", lambda *a, **k: Dummy())
+    with caplog.at_level(logging.INFO, logger="chess_analysis.analysis"):
+        assert run_analyze(db, config) == 2
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "backlog" in messages
+    assert "progress:" in messages
+    assert "ETA" in messages
+
+
+def test_backlog_estimate_counts_stale_results(config, db, monkeypatch, caplog):
+    """A threshold change invalidates cached results — the backlog estimate
+    must count them, not report ~0 games (review finding)."""
+    import logging
+
+    import chess_analysis.analysis as analysis_mod
+
+    db.execute(
+        """INSERT INTO games (uuid, month, end_time, pgn, white, black, result, time_class, rules)
+           VALUES ('s1', '2024/04', 1714500000, ?, 'testuser', 'opponent', '1-0', 'rapid', 'chess')""",
+        (STUB_PGN,),
+    )
+    db.commit()
+
+    class Dummy(StubEngine):
+        def evaluate(self, board, **kw):
+            return [{"cp": 20, "mate": None, "pv": []}]
+
+    monkeypatch.setattr(analysis_mod, "Engine", lambda *a, **k: Dummy())
+    assert run_analyze(db, config) == 1
+
+    # change thresholds -> stored results stale -> backlog must be 1, not 0
+    config.thresholds.blunder = 35.0
+    with caplog.at_level(logging.INFO, logger="chess_analysis.analysis"):
+        assert run_analyze(db, config) == 1
+    messages = [r.getMessage() for r in caplog.records if "backlog" in r.getMessage()]
+    assert messages and "games need review" in messages[0]
+    assert "~1 games" in messages[0]

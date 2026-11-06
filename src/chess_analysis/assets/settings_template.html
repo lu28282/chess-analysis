@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>chess-analysis — settings</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 760px; padding: 2rem 1rem; color: #222; }
+  h1 { font-size: 1.5rem; } h2 { font-size: 1.05rem; margin: 1.6rem 0 .4rem; }
+  .muted { color: #777; font-size: .85rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: .6rem 1rem; }
+  label { font-size: .8rem; color: #444; display: block; }
+  input { width: 100%; padding: .4rem .6rem; border: 1px solid #bbb; border-radius: 6px; font-size: .95rem; box-sizing: border-box; margin-top: .15rem; }
+  button { margin-top: 1.2rem; padding: .5rem 1.2rem; border: none; border-radius: 6px; background: #4a7fb5; color: #fff; font-size: 1rem; cursor: pointer; }
+  button:disabled { background: #9aa8b8; cursor: not-allowed; }
+  .msg { margin-top: .8rem; font-weight: 600; min-height: 1.2em; }
+  .ok { color: #2a7a2a; } .err { color: #b03030; }
+  a { color: #4a7fb5; }
+</style>
+</head>
+<body>
+<h1><a href="/">&#8592;</a> Settings</h1>
+<p class="muted">The TOML config file is the single source of truth — this page writes it.
+Changes apply to the next job run; a changed engine budget or thresholds marks old
+analyses stale (they are re-reviewed on the next analyze run).</p>
+<p class="muted err" id="config-error" hidden></p>
+
+<form id="settings">
+  <h2>Account</h2>
+  <div class="grid">
+    <div><label>chess.com username</label><input data-key="username"></div>
+    <div><label>HTTP User-Agent</label><input data-key="user_agent"></div>
+    <div><label>SQLite DB path (advanced)</label><input data-key="db_path"></div>
+    <div><label>reports dir (advanced)</label><input data-key="reports_dir"></div>
+  </div>
+
+  <h2>Engine budget</h2>
+  <div class="grid">
+    <div><label>Stockfish path</label><input data-key="engine_path"></div>
+    <div><label>eval_ms (per position)</label><input data-key="eval_ms" type="number" min="50"></div>
+    <div><label>eval_depth (0 = time-based)</label><input data-key="eval_depth" type="number" min="0"></div>
+    <div><label>multipv</label><input data-key="multipv" type="number" min="1" max="5"></div>
+    <div><label>threads per engine</label><input data-key="threads" type="number" min="1"></div>
+    <div><label>hash_mb per engine</label><input data-key="hash_mb" type="number" min="16"></div>
+    <div><label>analyze workers (0 = auto: one per core)</label><input data-key="workers" type="number" min="0"></div>
+  </div>
+
+  <h2>Fetch window (defaults for fetch runs)</h2>
+  <div class="grid">
+    <div><label>months (0 = all)</label><input data-key="fetch.months" type="number" min="0"></div>
+    <div><label>since (YYYY-MM, empty = all)</label><input data-key="fetch.since" placeholder="2024-01"></div>
+    <div><label>max games (0 = unlimited)</label><input data-key="fetch.max_games" type="number" min="0"></div>
+  </div>
+
+  <h2>Classification thresholds (win% drop points)</h2>
+  <div class="grid">
+    <div><label>brilliant (pawns ahead)</label><input data-key="thresholds.brilliant" type="number" step="0.1" min="0"></div>
+    <div><label>best</label><input data-key="thresholds.best" type="number" step="0.1" min="0"></div>
+    <div><label>good</label><input data-key="thresholds.good" type="number" step="0.1" min="0"></div>
+    <div><label>inaccuracy</label><input data-key="thresholds.inaccuracy" type="number" step="0.1" min="0"></div>
+    <div><label>mistake</label><input data-key="thresholds.mistake" type="number" step="0.1" min="0"></div>
+    <div><label>blunder</label><input data-key="thresholds.blunder" type="number" step="0.1" min="0"></div>
+  </div>
+
+  <h2>Web UI</h2>
+  <div class="grid">
+    <div><label>default time-class filter</label>
+      <select data-key="ui.default_time_class" id="sel-tc" style="width:100%;padding:.4rem;border:1px solid #bbb;border-radius:6px">
+        <option value="">all</option>
+        <option value="bullet">bullet</option>
+        <option value="blitz">blitz</option>
+        <option value="rapid">rapid</option>
+        <option value="daily">daily</option>
+      </select></div>
+  </div>
+
+  <h2>Opening book explorer</h2>
+  <div class="grid">
+    <div><label>endpoint</label><input data-key="explorer.endpoint"></div>
+    <div><label>max_ply</label><input data-key="explorer.max_ply" type="number" min="1"></div>
+    <div><label>min_games</label><input data-key="explorer.min_games" type="number" min="1"></div>
+    <div><label>top_moves</label><input data-key="explorer.top_moves" type="number" min="1"></div>
+    <div><label>delay_ms</label><input data-key="explorer.delay_ms" type="number" min="0"></div>
+    <div><label>max_positions</label><input data-key="explorer.max_positions" type="number" min="1"></div>
+    <div><label>jobava_max_setup_ply</label><input data-key="opening.jobava_max_setup_ply" type="number" min="1"></div>
+    <div><label>caro_kann_max_ply</label><input data-key="opening.caro_kann_max_ply" type="number" min="1"></div>
+  </div>
+
+  <button type="submit" id="save">Save settings</button>
+  <div class="msg" id="msg"></div>
+</form>
+
+<script>
+const inputs = [...document.querySelectorAll('[data-key]')];
+
+function get(doc, key) { return key.split('.').reduce((o, k) => (o || {})[k], doc); }
+function set(doc, key, value) {
+  const parts = key.split('.'); let o = doc;
+  for (let i = 0; i < parts.length - 1; i++) o = o[parts[i]] = o[parts[i]] || {};
+  o[parts.at(-1)] = value;
+}
+
+async function load() {
+  const s = await (await fetch('/api/settings')).json();
+  if (s.config_error && s.config && s.config.username) {
+    const el = document.getElementById('config-error');
+    el.hidden = false; el.textContent = s.config_error + ' — saving below repairs the file.';
+  }
+  inputs.forEach(el => {
+    const v = get(s.config, el.dataset.key);
+    if (el.tagName === 'SELECT') el.value = v || '';
+    else el.value = v == null ? '' : v;
+  });
+}
+
+document.getElementById('settings').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const msg = document.getElementById('msg');
+  msg.className = 'msg'; msg.textContent = 'saving…';
+  const doc = {};
+  inputs.forEach(el => {
+    let v = el.value.trim();
+    if (el.type === 'number') v = v === '' ? 0 : Number(v);
+    set(doc, el.dataset.key, v);
+  });
+  try {
+    const resp = await fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(doc)
+    });
+    const data = await resp.json();
+    if (data.ok) { msg.className = 'msg ok'; msg.textContent = 'Saved — changes apply to the next job run.'; }
+    else { msg.className = 'msg err'; msg.textContent = data.error || 'saving failed'; }
+  } catch (e) { msg.className = 'msg err'; msg.textContent = String(e); }
+});
+
+load();
+</script>
+</body>
+</html>

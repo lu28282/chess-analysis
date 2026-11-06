@@ -17,6 +17,9 @@
   .step p { margin: 0 0 .6rem; font-size: .8rem; color: #666; min-height: 2.2em; }
   .step button { padding: .4rem .9rem; border: none; border-radius: 6px; background: #4a7fb5; color: #fff; cursor: pointer; }
   .step button:disabled { background: #9aa8b8; cursor: not-allowed; }
+  .step .params { margin: 0 0 .5rem; display: grid; gap: .25rem; }
+  .step .params label { font-size: .72rem; color: #555; display: block; }
+  .step .params input { width: 100%; padding: .2rem .4rem; border: 1px solid #ccc; border-radius: 4px; font-size: .8rem; box-sizing: border-box; }
   #job { border: 1px solid #ddd; border-radius: 8px; padding: .8rem 1rem; margin-bottom: 1rem; background: #fff; }
   #log { background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: .78rem;
          border-radius: 8px; padding: .8rem 1rem; white-space: pre-wrap; max-height: 320px; overflow-y: auto; }
@@ -29,7 +32,7 @@
 </head>
 <body>
 <h1>chess-analysis</h1>
-<p class="muted">Personal pipeline: fetch &rarr; build opening book &rarr; analyze &rarr; reports. One step runs at a time; <code>analyze</code> is resumable.</p>
+<p class="muted">Personal pipeline: fetch &rarr; build opening book &rarr; analyze &rarr; reports. One step runs at a time; <code>analyze</code> is resumable. <a href="/settings">Settings</a> &mdash; everything is configurable in the web UI.</p>
 <p><a href="/viewer" style="font-weight:600">&#9822; Game viewer — replay your games on a chessboard, step through mistakes, explore variations</a></p>
 <p><a href="/insights" style="font-weight:600">&#128202; Mistake insights — your mistake patterns, explained visually without notation</a></p>
 <p><a href="/openings" style="font-weight:600">&#128018; Opening blunders — the traps you keep falling into, with solutions and practice</a></p>
@@ -41,6 +44,7 @@
 </div>
 
 <div class="steps" id="steps"></div>
+<p class="muted">Empty fields fall back to the configured defaults (settings page). Workers: 0 = auto (one per core).</p>
 
 <div id="job" hidden>
   <h3 style="margin:0 0 .4rem" id="job-title"></h3>
@@ -56,20 +60,72 @@
 const stepsOrder = ["fetch", "sync-parsed", "build-opening-book", "analyze", "report-mistakes", "report-openings"];
 const stepsEl = document.getElementById('steps');
 
+// per-run parameter inputs rendered into the step cards (STEP_PARAMS from /api/status)
+const PARAM_FIELDS = {
+  fetch: [
+    { key: 'months',    label: 'months',              type: 'number', placeholder: 'newest N' },
+    { key: 'since',     label: 'since',               type: 'text',   placeholder: 'YYYY-MM' },
+    { key: 'max_games', label: 'max new games',        type: 'number', placeholder: 'stop after N' },
+  ],
+  analyze: [
+    { key: 'limit',   label: 'limit',                 type: 'number', placeholder: 'first N' },
+    { key: 'workers', label: 'workers',               type: 'number', placeholder: '0 = auto' },
+  ],
+};
+
+function paramInputs(step) {
+  const fields = PARAM_FIELDS[step];
+  if (!fields) return '';
+  return '<div class="params">' + fields.map(f =>
+    '<label>' + f.label + ' <input id="p-' + step + '-' + f.key + '" type="' + f.type + '" placeholder="' + f.placeholder + '"></label>'
+  ).join('') + '</div>';
+}
+
+function stepParams(step) {
+  const fields = PARAM_FIELDS[step];
+  if (!fields) return undefined;
+  const params = {};
+  let any = false;
+  fields.forEach(f => {
+    const v = document.getElementById('p-' + step + '-' + f.key).value.trim();
+    if (v !== '') { params[f.key] = v; any = true; }
+  });
+  return any ? params : undefined;
+}
+
+// The cards are built once; every poll only updates the Run buttons, so typed
+// parameter values survive the periodic /api/status refresh.
+function renderSteps(running) {
+  if (!renderSteps.built) {
+    stepsEl.innerHTML = stepsOrder.map(step =>
+      '<div class="step"><h3>' + step + '</h3><p id="desc-' + step + '"></p>' +
+      paramInputs(step) +
+      '<button id="btn-' + step + '" onclick="run(\'' + step + '\')">Run</button></div>').join('');
+    renderSteps.built = true;
+  }
+  stepsOrder.forEach(step => {
+    const btn = document.getElementById('btn-' + step);
+    btn.disabled = !!running;
+    btn.textContent = running === step ? 'running…' : 'Run';
+  });
+}
+
 async function refresh() {
   let s;
   try { s = await (await fetch('/api/status')).json(); }
   catch { setTimeout(refresh, 2000); return; }
+
+  if (s.setup_required) { location.href = '/setup'; return; }
 
   document.getElementById('k-games').textContent = s.stats.games == null ? '–' : s.stats.games;
   document.getElementById('k-analyzed').textContent = s.stats.analyzed == null ? '–' : s.stats.analyzed;
   document.getElementById('k-book').textContent = s.stats.book == null ? '–' : s.stats.book;
 
   const running = s.job && !s.job.done ? s.job.step : null;
-  stepsEl.innerHTML = stepsOrder.map(step =>
-    '<div class="step"><h3>' + step + '</h3><p>' + esc(s.steps[step] || '') + '</p>' +
-    '<button ' + (running ? 'disabled' : '') + ' onclick="run(\'' + step + '\')">' +
-    (running === step ? 'running…' : 'Run') + '</button></div>').join('');
+  renderSteps(running);
+  stepsOrder.forEach(step => {
+    document.getElementById('desc-' + step).textContent = s.steps[step] || '';
+  });
 
   const jobEl = document.getElementById('job');
   const logEl = document.getElementById('log');
@@ -95,7 +151,11 @@ async function refresh() {
 }
 
 async function run(step) {
-  const resp = await fetch('/api/run/' + step, { method: 'POST' });
+  const resp = await fetch('/api/run/' + step, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ params: stepParams(step) })
+  });
   const data = await resp.json();
   if (!data.ok) alert(data.message);
   refresh();

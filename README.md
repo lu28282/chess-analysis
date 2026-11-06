@@ -7,31 +7,36 @@ Personal chess game analysis: fetch your chess.com games, review them with Stock
 
 ## What it does
 
-- **Fetch** — incremental sync of your chess.com games (PubAPI, serial requests, ETag caching)
-- **Analyze** — Stockfish review of unanalyzed games (~1s/position), resumable backlog via `--limit N`
+- **Fetch** — incremental sync of your chess.com games (PubAPI, serial requests, ETag caching); window limits (`--months`, `--since`, `--max-games`) configurable in the UI
+- **Analyze** — Stockfish review of unanalyzed games (~1s/position), resumable backlog via `--limit N`; one worker per CPU core by default, with live progress and ETA
 - **Web UI** — the main way to use this: an interactive UI at `http://localhost:8000` where you can:
-  - fetch all your games
+  - set everything up on first run (setup wizard) — no config file copying
+  - edit every setting on the `/settings` page (TOML stays the source of truth)
+  - fetch all your games, analyze with per-run parameters
+  - filter every view by game mode (bullet/blitz/rapid/daily) — 2-minute mistakes differ from 10-minute mistakes
   - click through to an interactive chessboard per game
   - jump straight to your bad moves and see them played out
 
 ## Stack
 
 Python · Typer CLI · chess.com PubAPI · SQLite · python-chess · Stockfish — **all inside Docker; nothing runs natively on the host.**
+The image is multi-arch (amd64 + arm64): Apple Silicon Macs run it natively, no Rosetta.
 
 ## Usage
 
 The host only needs Docker and a browser:
 
 ```bash
-# start the web UI
+# start the web UI — a setup wizard appears on first run
 docker compose up
 
 # one-shot pipeline jobs (fetch/analyze without the UI)
-docker compose run fetch
+docker compose run fetch -- --months 6
 docker compose run analyze -- --limit 10
 ```
 
-Data lives in bind mounts: SQLite in `./data/`, read-only config in `./config/chess-analysis.toml`.
+Data lives in bind mounts: SQLite in `./data/`, config in `./config/chess-analysis.toml`
+(written by the setup wizard and settings page, but hand-editable too), reports in `./reports/`.
 
 ## Development
 

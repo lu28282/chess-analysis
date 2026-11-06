@@ -28,12 +28,19 @@ eval_ms = 100
 
 
 @pytest.fixture()
-def server(config, config_path, tmp_path):
+def watcher(config, config_path, tmp_path):
+    from chess_analysis.webui import ConfigWatcher
+
+    return ConfigWatcher(config_path)
+
+
+@pytest.fixture()
+def server(config, config_path, tmp_path, watcher):
     config.reports_dir.mkdir(parents=True, exist_ok=True)
     from chess_analysis.webui import JobManager, make_handler
 
-    manager = JobManager(config, config_path)
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(manager, config))
+    manager = JobManager(watcher)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(watcher, manager))
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     yield httpd, manager
@@ -213,7 +220,7 @@ class StubConsultant:
 
 
 @pytest.fixture()
-def server_sf(config, config_path, tmp_path):
+def server_sf(config, config_path, tmp_path, watcher):
     config.reports_dir.mkdir(parents=True, exist_ok=True)
     from chess_analysis.webui import JobManager, make_handler
 
@@ -225,8 +232,8 @@ def server_sf(config, config_path, tmp_path):
              "pv_san": ["Nf3", "Nf6"]},
         ],
     })
-    manager = JobManager(config, config_path)
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(manager, config, stub))
+    manager = JobManager(watcher)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(watcher, manager, stub))
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     yield httpd, stub
@@ -257,8 +264,8 @@ def test_api_best_rejects_missing_fen(server_sf):
     assert json.loads(body)["error"] == "missing fen"
 
 
-def test_engine_consultant_validates_and_formats(config):
-    from chess_analysis.webui import EngineConsultant
+def test_engine_consultant_validates_and_formats(config, config_path):
+    from chess_analysis.webui import ConfigWatcher, EngineConsultant
 
     class StubEngine:
         name = "stub-sf"
@@ -266,7 +273,8 @@ def test_engine_consultant_validates_and_formats(config):
         def evaluate(self, board, *, eval_ms, eval_depth, multipv):
             return [{"cp": 55, "mate": None, "pv": ["g1f3", "g8f6", "e2e4"]}][:multipv]
 
-    ec = EngineConsultant(config, engine_factory=lambda *a, **k: StubEngine())
+    watcher = ConfigWatcher(config_path)
+    ec = EngineConsultant(watcher, engine_factory=lambda *a, **k: StubEngine())
 
     # invalid fen -> None (no engine spawn)
     assert ec.best_moves("not a fen", 3) is None
@@ -284,10 +292,10 @@ def test_engine_consultant_validates_and_formats(config):
     ec.close()
 
 
-def test_engine_consultant_caches_answers(config, db):
+def test_engine_consultant_caches_answers(config, config_path, db, watcher):
     """Second question about the same position is served from `engine_advice`:
     the engine is only asked once per (position, engine, budget)."""
-    from chess_analysis.webui import EngineConsultant
+    from chess_analysis.webui import ConfigWatcher, EngineConsultant
 
     calls = []
 
@@ -299,7 +307,7 @@ def test_engine_consultant_caches_answers(config, db):
             return [{"cp": 10, "mate": None, "pv": ["g1f3", "g8f6"]}]
 
     start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    ec = EngineConsultant(config, engine_factory=lambda *a, **k: StubEngine())
+    ec = EngineConsultant(watcher, engine_factory=lambda *a, **k: StubEngine())
     r1 = ec.best_moves(start, 3)
     assert len(calls) == 1
     # same question again -> cache hit, engine untouched
@@ -312,8 +320,17 @@ def test_engine_consultant_caches_answers(config, db):
     other = "rnbqkbnr/pppp1ppp/8/4p2Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 2 3"
     ec.best_moves(other, 3)
     assert len(calls) == 2
-    # a budget change invalidates the cache
-    config.eval_ms = 250
+    # a budget change invalidates the cache (rewrite the config file, watcher reloads)
+    config_path.write_text(
+        f"""username = "testuser"
+db_path = "{config.db_path}"
+reports_dir = "{config.reports_dir}"
+engine_path = "{config.engine_path}"
+user_agent = "chess-analysis-test"
+eval_ms = 250
+""",
+        encoding="utf-8",
+    )
     ec.best_moves(start, 3)
     assert len(calls) == 3
     ec.close()
@@ -321,18 +338,18 @@ def test_engine_consultant_caches_answers(config, db):
     class StubEngineV2(StubEngine):
         name = "stub-sf-2"
 
-    ec2 = EngineConsultant(config, engine_factory=lambda *a, **k: StubEngineV2())
+    ec2 = EngineConsultant(watcher, engine_factory=lambda *a, **k: StubEngineV2())
     assert ec2.best_moves(start, 3)["engine"] == "stub-sf-2"
     assert len(calls) == 4
     ec2.close()
 
 
-def test_job_step_args(config, config_path, monkeypatch):
+def test_job_step_args(config, config_path, monkeypatch, watcher):
     """The opening-book button builds offline from local games (not the network explorer)."""
     from chess_analysis.webui import JobManager, STEP_ARGS
 
     assert STEP_ARGS["build-opening-book"] == ["--source", "local"]
-    manager = JobManager(config, config_path)
+    manager = JobManager(watcher)
     commands = []
 
     class FakeProc:
@@ -353,6 +370,49 @@ def test_job_step_args(config, config_path, monkeypatch):
     assert commands[0] == [sys.executable, "-m", "chess_analysis", "build-opening-book", "--source", "local"]
     assert manager.start("report-mistakes")[0] is True
     assert commands[1] == [sys.executable, "-m", "chess_analysis", "report-mistakes"]  # no extra args
+
+
+def test_job_run_params_validated(watcher, config, monkeypatch):
+    """Per-run parameters from the UI become CLI args; bad ones are rejected."""
+    from chess_analysis.webui import JobManager, _step_args
+
+    assert _step_args("fetch", {"months": "6", "since": "2024-01"}) == ["--months", "6", "--since", "2024-01"]
+    assert _step_args("fetch", {"max_games": "50"}) == ["--max-games", "50"]
+    assert _step_args("analyze", {"limit": "10", "workers": "0"}) == ["--limit", "10", "--workers", "0"]
+    assert _step_args("fetch", None) == []
+    assert _step_args("fetch", {}) == []
+    with pytest.raises(ValueError):
+        _step_args("fetch", {"since": "2024-13"})  # invalid month
+    with pytest.raises(ValueError):
+        _step_args("fetch", {"months": -1})
+    with pytest.raises(ValueError):
+        _step_args("analyze", {"limit": "abc"})
+    with pytest.raises(ValueError):
+        _step_args("sync-parsed", {"anything": "1"})  # step takes no params
+
+    manager = JobManager(watcher)
+    commands = []
+
+    class FakeProc:
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr("chess_analysis.webui.subprocess.Popen", lambda cmd, **k: (commands.append(cmd), FakeProc())[1])
+    ok, message = manager.start("analyze", {"limit": "3", "workers": "2"})
+    assert ok and "limit" in message
+    assert commands[0][-2:] == ["--limit", "3"] or "--workers" in commands[0]
+    assert "--workers" in commands[0] and "--limit" in commands[0]
+    ok, message = manager.start("fetch", {"since": "nope"})
+    assert not ok and "invalid" in message
+
+
+def test_job_refuses_to_start_without_config(tmp_path, monkeypatch):
+    from chess_analysis.webui import ConfigWatcher, JobManager
+
+    watcher = ConfigWatcher(tmp_path / "missing.toml")
+    manager = JobManager(watcher)
+    ok, message = manager.start("fetch")
+    assert not ok and "config" in message
 
 
 # ---------------------------------------------------------------- mistake insights
@@ -506,3 +566,164 @@ def test_api_opening_mistakes_filters_and_enriches(server, db):
     data2 = json.loads(body)
     assert sorted(x["ply"] for x in data2["mistakes"]) == [3, 35]
     assert "opening_name" not in data2["mistakes"][0]
+
+
+# ---------------------------------------------------------------- settings & setup (stories 08/09)
+
+def test_settings_page_served(server):
+    httpd, _ = server
+    status, body = _request(httpd.server_port, "GET", "/settings")
+    assert status == 200
+    assert b"Settings" in body
+    status, body = _request(httpd.server_port, "GET", "/setup")
+    assert status == 200
+    assert b"chess.com username" in body
+
+
+def test_api_settings_returns_current_values(server, config_path):
+    httpd, _ = server
+    status, body = _request(httpd.server_port, "GET", "/api/settings")
+    assert status == 200
+    data = json.loads(body)
+    assert data["setup_required"] is False
+    assert data["config"]["username"] == "testuser"
+    assert data["config"]["eval_ms"] == 100  # from the file
+    assert data["config"]["workers"] == 0    # default merged in
+    assert data["config"]["fetch"]["months"] == 0
+    assert "thresholds" in data["schema"]
+
+
+def test_post_settings_writes_toml_and_applies(server, config_path):
+    """Saving the settings page rewrites the TOML; the next status call sees it."""
+    httpd, _ = server
+    status, body = _request(httpd.server_port, "POST", "/api/settings",
+                            {"username": "testuser", "eval_ms": 250, "workers": 4,
+                             "fetch": {"months": 6}, "ui": {"default_time_class": "blitz"}})
+    assert status == 200
+    data = json.loads(body)
+    assert data["ok"] is True
+
+    import tomllib
+    doc = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert doc["eval_ms"] == 250
+    assert doc["workers"] == 4
+    assert doc["fetch"]["months"] == 6
+    assert doc["ui"]["default_time_class"] == "blitz"
+
+    status, body = _request(httpd.server_port, "GET", "/api/status")
+    data = json.loads(body)
+    assert data["config"]["default_time_class"] == "blitz"  # watcher picked it up
+
+
+def test_post_settings_rejects_invalid_values(server, config_path):
+    httpd, _ = server
+    original = config_path.read_text(encoding="utf-8")
+    status, body = _request(httpd.server_port, "POST", "/api/settings",
+                            {"username": "testuser", "eval_ms": "not-a-number"})
+    assert status == 400
+    assert "eval_ms" in json.loads(body)["error"]
+    status, body = _request(httpd.server_port, "POST", "/api/settings",
+                            {"username": "", "eval_ms": 100})
+    assert status == 400
+    assert "username" in json.loads(body)["error"]
+    status, body = _request(httpd.server_port, "POST", "/api/settings",
+                            {"no_such_key": 1})
+    assert status == 400
+    assert "no_such_key" in json.loads(body)["error"]
+    # nothing was written on failure
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_setup_wizard_flow(tmp_path, monkeypatch):
+    """Without a config the UI serves the wizard; posting a username creates it."""
+    from chess_analysis.webui import ConfigWatcher, JobManager, make_handler
+
+    # the wizard writes container-default paths (relative to the working dir,
+    # /app in the container) — isolate the cwd for this test
+    monkeypatch.chdir(tmp_path)
+    watcher = ConfigWatcher(tmp_path / "missing.toml")
+    manager = JobManager(watcher)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(watcher, manager))
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = httpd.server_port
+
+        status, body = _request(port, "GET", "/")
+        assert status == 302
+        status, body = _request(port, "GET", "/api/status")
+        data = json.loads(body)
+        assert data["setup_required"] is True
+        status, body = _request(port, "GET", "/setup")
+        assert status == 200
+
+        # the wizard writes the config (container defaults apply)
+        status, body = _request(port, "POST", "/api/settings", {"username": "newuser"})
+        assert status == 200
+        assert json.loads(body)["ok"] is True
+        assert json.loads(body)["setup_complete"] is True
+
+        # the UI is now fully functional without a restart
+        status, body = _request(port, "GET", "/api/status")
+        data = json.loads(body)
+        assert data["setup_required"] is False
+        assert data["stats"]["games"] == 0
+        status, body = _request(port, "GET", "/")
+        assert status == 200
+    finally:
+        httpd.shutdown()
+
+
+# ---------------------------------------------------------------- viewer filters (story 12)
+
+def test_api_games_filters_time_class_and_color(server, db):
+    _insert_analyzed_game(db, "f1")                                   # rapid, white
+    _insert_analyzed_game(db, "f2", my_color="black")                 # rapid, black
+    db.execute("UPDATE games SET time_class = 'blitz' WHERE uuid = 'f2'")
+    db.commit()
+    httpd, _ = server
+
+    status, body = _request(httpd.server_port, "GET", "/api/games")
+    data = json.loads(body)
+    assert sorted(g["uuid"] for g in data) == ["f1", "f2"]
+
+    status, body = _request(httpd.server_port, "GET", "/api/games?time_class=blitz")
+    data = json.loads(body)
+    assert [g["uuid"] for g in data] == ["f2"]
+
+    status, body = _request(httpd.server_port, "GET", "/api/games?color=white")
+    data = json.loads(body)
+    assert [g["uuid"] for g in data] == ["f1"]
+
+    status, body = _request(httpd.server_port, "GET", "/api/games?time_class=blitz&color=white")
+    data = json.loads(body)
+    assert data == []
+
+
+def test_corrupt_config_repaired_via_web(config_path, config, tmp_path):
+    """A hand-broken TOML must not kill the UI; the settings page repairs it."""
+    from chess_analysis.webui import ConfigWatcher, JobManager, make_handler
+
+    config.reports_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text('username = "testuser"\nbroken [', encoding="utf-8")
+    watcher = ConfigWatcher(config_path)
+    manager = JobManager(watcher)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(watcher, manager))
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = httpd.server_port
+        # wizard mode (the broken file counts as no config) — settings API works
+        status, body = _request(port, "GET", "/api/status")
+        assert json.loads(body)["setup_required"] is True
+        assert "invalid config" in json.loads(body)["config_error"]
+        status, body = _request(port, "GET", "/api/settings")
+        assert status == 200  # no crash on the broken file
+        status, body = _request(port, "POST", "/api/settings", {"username": "testuser"})
+        assert status == 200
+        assert json.loads(body)["setup_complete"] is True
+        import tomllib
+        raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        assert raw["username"] == "testuser"
+    finally:
+        httpd.shutdown()

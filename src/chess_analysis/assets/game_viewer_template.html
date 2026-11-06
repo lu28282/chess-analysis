@@ -120,6 +120,18 @@
         <option value="mistakes">most mistakes</option>
         <option value="accuracy">worst accuracy</option>
       </select>
+      <select id="f-tc">
+        <option value="">all time classes</option>
+        <option value="bullet">bullet</option>
+        <option value="blitz">blitz</option>
+        <option value="rapid">rapid</option>
+        <option value="daily">daily</option>
+      </select>
+      <select id="f-color">
+        <option value="">both colors</option>
+        <option value="white">as white</option>
+        <option value="black">as black</option>
+      </select>
       <label><input type="checkbox" id="only-mistakes"> only games with my mistakes</label>
     </div>
     <div id="games-list"><p class="empty">loading…</p></div>
@@ -583,19 +595,43 @@ function renderPanel() {
 
 // ---- game data ----
 async function loadGames() {
-  const resp = await fetch('/api/games');
+  // server-side filtering keeps the payload small; the client-side predicate
+  // in renderGameList stays as a safety net
+  const qs = new URLSearchParams();
+  if (document.getElementById('f-tc').value) qs.set('time_class', document.getElementById('f-tc').value);
+  if (document.getElementById('f-color').value) qs.set('color', document.getElementById('f-color').value);
+  const resp = await fetch('/api/games' + (qs.toString() ? '?' + qs : ''));
   games = await resp.json();
+  // preselect the default time-class filter from the settings (ui.default_time_class)
+  try {
+    const s = await (await fetch('/api/status')).json();
+    const def = s.config && s.config.default_time_class;
+    if (def) {
+      const sel = document.getElementById('f-tc');
+      if ([...sel.options].some(o => o.value === def) && !sel.value) {
+        sel.value = def;
+        return loadGames();  // refetch with the default filter applied
+      }
+    }
+  } catch (e) { /* defaults are cosmetic */ }
   renderGameList();
+}
+
+function filteredGames() {
+  const sort = document.getElementById('sort').value;
+  const only = document.getElementById('only-mistakes').checked;
+  const tc = document.getElementById('f-tc').value;
+  const color = document.getElementById('f-color').value;
+  let list = games.filter(g => (!only || g.mistakes > 0) && (!tc || g.time_class === tc) && (!color || g.color === color));
+  if (sort === 'mistakes') list = [...list].sort((a, b) => b.mistakes - a.mistakes || b.end_time - a.end_time);
+  else if (sort === 'accuracy') list = [...list].sort((a, b) => (a.accuracy ?? 100) - (b.accuracy ?? 100) || b.end_time - a.end_time);
+  else list = [...list].sort((a, b) => b.end_time - a.end_time);
+  return list;
 }
 
 function renderGameList() {
   const el = document.getElementById('games-list');
-  const sort = document.getElementById('sort').value;
-  const only = document.getElementById('only-mistakes').checked;
-  let list = games.filter(g => !only || g.mistakes > 0);
-  if (sort === 'mistakes') list = [...list].sort((a, b) => b.mistakes - a.mistakes || b.end_time - a.end_time);
-  else if (sort === 'accuracy') list = [...list].sort((a, b) => (a.accuracy ?? 100) - (b.accuracy ?? 100) || b.end_time - a.end_time);
-  else list = [...list].sort((a, b) => b.end_time - a.end_time);
+  const list = filteredGames();
   if (!list.length) {
     el.innerHTML = '<p class="empty">' + (games.length ? 'no games match the filter' :
       'no analyzed games yet — run <b>analyze</b> on the pipeline page first') + '</p>';
@@ -676,6 +712,8 @@ document.getElementById('b-var-undo').addEventListener('click', () => {
 document.getElementById('b-var-back').addEventListener('click', () => { exitVariation(); clearSf(); renderBoard(); renderPanel(); });
 document.getElementById('sort').addEventListener('change', renderGameList);
 document.getElementById('only-mistakes').addEventListener('change', renderGameList);
+document.getElementById('f-tc').addEventListener('change', () => loadGames());
+document.getElementById('f-color').addEventListener('change', () => loadGames());
 document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') { setPly(ply - 1); e.preventDefault(); }
   else if (e.key === 'ArrowRight') { setPly(ply + 1); e.preventDefault(); }
@@ -690,8 +728,10 @@ document.addEventListener('keydown', e => {
     await loadGame(uuid);
     const p = +params.get('ply');
     if (Number.isInteger(p) && p > 0) setPly(p);
-  } else if (games.length) {
-    await loadGame(games[0].uuid);
+  } else {
+    // auto-select from the filtered list (matches what the sidebar shows)
+    const list = filteredGames();
+    if (list.length) await loadGame(list[0].uuid);
   }
 })();
 </script>

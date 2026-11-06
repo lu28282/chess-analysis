@@ -24,7 +24,7 @@
 <body>
 <h1>Opening coach — {{username}}</h1>
 <p class="muted">Generated {{generated_at}} · offline report · reference book:
-  <span id="book-source"></span></p>
+  <span id="book-source"></span> · time class: <span id="time-class"></span></p>
 
 <div id="summary"></div>
 
@@ -133,6 +133,7 @@ const src = DATA.book_source === 'lichess' ? 'lichess opening explorer (referenc
   : DATA.book_source === 'none' ? 'not built yet — run `build-opening-book`'
   : 'mixed';
 document.getElementById('book-source').textContent = src;
+document.getElementById('time-class').textContent = DATA.time_class || 'all';
 summary.innerHTML =
   kpi('Jobava London', cc.jobava_london || 0) +
   kpi('Jobava avoided', cc.jobava_avoided || 0) +

@@ -179,6 +179,7 @@ def collect_data(conn: sqlite3.Connection, config: AppConfig) -> dict[str, Any]:
         "moves_by_color_tc": {f"{c}|{tc}": n for (c, tc), n in moves_by_color_tc.items()},
         "motif_examples": dict(motif_examples),
         "themes": themes,
+        "default_time_class": config.ui.default_time_class,
     }
 
 

@@ -460,6 +460,30 @@ def _store_analysis(
     )
 
 
+def _estimate_backlog(conn: sqlite3.Connection, rows: list[sqlite3.Row], signature: str) -> int:
+    """Games needing analysis under the current budget/thresholds (upper bound).
+
+    A stored analysis counts as done only when signature and input checksum
+    match — stale rows (changed budget/thresholds, edited PGN) count as todo.
+    The engine version is unknown here (spawning just for the estimate would
+    defeat resumability of quick runs), so results stale by engine version
+    only are overcounted — hence "upper bound".
+    """
+    todo = 0
+    for row in rows:
+        existing = conn.execute(
+            "SELECT signature, input_checksum FROM analysis WHERE game_uuid = ?",
+            (row["uuid"],),
+        ).fetchone()
+        if (
+            existing is None
+            or existing["signature"] != signature
+            or existing["input_checksum"] != pgn_checksum(row["pgn"])
+        ):
+            todo += 1
+    return todo
+
+
 def run_analyze(
     conn: sqlite3.Connection,
     cfg: AppConfig,
@@ -475,11 +499,12 @@ def run_analyze(
     engine budget, thresholds, and PGN checksum. `--game UUID` (or force)
     re-analyzes explicitly. A single bad game is logged and skipped, never fatal.
 
-    With `workers` > 1 (config key `workers` or the CLI option) the games run in
-    parallel: each worker thread owns its own Stockfish process and SQLite
-    connection and commits its results as they finish (WAL, short transactions).
+    With workers > 1 (config key `workers`, CLI option, or auto-detected when
+    workers is 0) the games run in parallel: each worker thread owns its own
+    Stockfish process and SQLite connection and commits its results as they
+    finish (WAL, short transactions).
     """
-    n_workers = max(1, cfg.workers if workers is None else workers)
+    n_workers = cfg.resolved_workers if workers in (None, 0) else workers
     signature = cfg.analysis_signature
     if game_uuid:
         rows = conn.execute(
@@ -490,9 +515,37 @@ def run_analyze(
         rows = conn.execute(
             "SELECT * FROM games WHERE parse_error IS NULL AND pgn != '' ORDER BY end_time"
         ).fetchall()
+    if not game_uuid:
+        backlog_est = _estimate_backlog(conn, rows, signature)
+        log.info(
+            "analyze backlog: ~%d games need review (%d analyzable stored, %d with cached results), %d worker(s)",
+            backlog_est,
+            len(rows),
+            len(rows) - backlog_est,
+            n_workers,
+        )
     if game_uuid or n_workers == 1:
-        return _run_sequential(conn, cfg, rows, signature, limit=limit, game_uuid=game_uuid, force=force)
-    return _run_parallel(conn, cfg, rows, signature, limit=limit, force=force, workers=n_workers)
+        return _run_sequential(
+            conn, cfg, rows, signature,
+            limit=limit, game_uuid=game_uuid, force=force, total_estimate=backlog_est if not game_uuid else len(rows),
+        )
+    return _run_parallel(
+        conn, cfg, rows, signature, limit=limit, force=force, workers=n_workers,
+        total_estimate=backlog_est,
+    )
+
+
+def _progress_line(done: int, total: int, started: float) -> str:
+    """Human-readable progress with rate and ETA for the job log (web UI tail)."""
+    elapsed = time.monotonic() - started
+    if done <= 0 or elapsed <= 0:
+        return "ETA pending first finished game"
+    secs_per_game = elapsed / done
+    remaining = max(total - done, 0) * secs_per_game
+    return (
+        f"{elapsed / 60:.0f}m elapsed, ETA ~{remaining / 60:.0f}m "
+        f"({3600 / secs_per_game:.1f} games/h)"
+    )
 
 
 def _run_sequential(
@@ -504,8 +557,10 @@ def _run_sequential(
     limit: int | None,
     game_uuid: str | None,
     force: bool,
+    total_estimate: int = 0,
 ) -> int:
     done = skipped_errors = 0
+    started = time.monotonic()
     engine: Engine | None = None
     try:
         for row in rows:
@@ -534,6 +589,13 @@ def _run_sequential(
             _store_analysis(conn, row, result, engine.name, signature, checksum)
             conn.commit()
             done += 1
+            processed = done + skipped_errors
+            if total_estimate:
+                log.info(
+                    "progress: %d done, %d skipped of ~%d — %s",
+                    done, skipped_errors, total_estimate,
+                    _progress_line(processed, total_estimate, started),
+                )
     except KeyboardInterrupt:
         log.info("interrupted — %d games analyzed so far are committed", done)
         raise
@@ -579,6 +641,7 @@ def _run_parallel(
     limit: int | None,
     force: bool,
     workers: int,
+    total_estimate: int = 0,
 ) -> int:
     """Parallel game review: N threads, each with its own engine process and
     SQLite connection, pulling from a shared queue and committing per game.
@@ -598,15 +661,27 @@ def _run_parallel(
         probe.close()
     if not todo:
         return 0
-    workers = min(workers, len(todo))
+    workers = max(1, min(workers, len(todo)))
     log.info("analyzing %d games with %d parallel workers", len(todo), workers)
 
     task_queue: queue.Queue[tuple[sqlite3.Row, str]] = queue.Queue()
     for item in todo:
         task_queue.put(item)
     stop = threading.Event()
-    stats = {"done": 0, "skipped": 0}
+    stats = {"done": 0, "skipped": 0, "processed": 0}
     stats_lock = threading.Lock()
+    started = time.monotonic()
+
+    def report() -> None:
+        """One progress line per finished game (the web UI shows the log tail)."""
+        if not total_estimate:
+            return
+        with stats_lock:
+            log.info(
+                "progress: %d done, %d skipped of ~%d — %s",
+                stats["done"], stats["skipped"], total_estimate,
+                _progress_line(stats["processed"], total_estimate, started),
+            )
 
     def worker() -> None:
         wconn = connect(cfg.db_path)
@@ -625,10 +700,14 @@ def _run_parallel(
                     wconn.commit()
                     with stats_lock:
                         stats["done"] += 1
+                        stats["processed"] += 1
+                    report()
                 except (ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
                     log.warning("skipping %s: %s", row["uuid"], exc)
                     with stats_lock:
                         stats["skipped"] += 1
+                        stats["processed"] += 1
+                    report()
         finally:
             if engine is not None:
                 engine.close()

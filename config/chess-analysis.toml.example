@@ -1,4 +1,5 @@
-# chess-analysis configuration (copy to chess-analysis.toml and edit)
+# chess-analysis configuration (copy to chess-analysis.toml and edit — or just
+# open the web UI: the setup wizard creates it, the /settings page edits it)
 username = "your-username"
 db_path = "/app/data/chess-analysis.db"
 user_agent = "chess-analysis (github.com/you)"
@@ -9,8 +10,9 @@ engine_path = "/usr/games/stockfish"
 eval_ms = 1000
 eval_depth = 0
 # Parallel game analysis: each worker runs its own Stockfish process and
-# writes to SQLite (WAL). Keep workers * threads <= your core count.
-# workers = 4
+# writes to SQLite (WAL). 0 = auto: one worker per CPU core.
+# Keep workers * threads <= your core count.
+# workers = 0
 # threads = 1
 # hash_mb = 256
 # Classification thresholds in win% drop points (chess.com-style); tune freely:
@@ -21,6 +23,17 @@ eval_depth = 0
 # inaccuracy = 10.0
 # mistake = 20.0
 # blunder = 40.0
+
+# Fetch window (defaults for every fetch run; CLI flags override):
+# 0 / "" = no limit (all monthly archives). `since` = YYYY-MM.
+# [fetch]
+# months = 0
+# since = ""
+# max_games = 0
+
+# Web UI: default time-class filter ("" = all; one of bullet/blitz/rapid/daily)
+# [ui]
+# default_time_class = ""
 
 # Reference opening book (Story 6). `build-opening-book` queries the lichess
 # opening explorer (rate-limited); `--source local` instead builds the book

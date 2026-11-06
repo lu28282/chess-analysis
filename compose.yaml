@@ -12,7 +12,8 @@ x-chess: &chess
     CHESS_ANALYSIS_CONFIG: /config/chess-analysis.toml
   volumes:
     - ./data:/app/data
-    - ./config:/config:ro
+    # read-write: the web UI settings page / setup wizard writes the TOML config
+    - ./config:/config
     - ./reports:/app/reports
 
 services:
@@ -31,7 +32,9 @@ services:
     <<: *chess
     profiles: [cli]
     command: analyze
-    # pass extra args: docker compose run analyze --limit 10
+    # pass extra args (the command repeats the subcommand):
+    #   docker compose run analyze analyze --limit 10
+    #   docker compose run fetch fetch --months 6
 
   report-mistakes:
     <<: *chess

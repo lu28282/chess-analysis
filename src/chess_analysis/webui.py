@@ -6,6 +6,11 @@ only one job may run at a time (SQLite is the single writer). The interactive
 game viewer (/viewer) serves read-only API endpoints — WAL allows those to
 run alongside a job. "Ask Stockfish" (/api/best) shares one engine process,
 serialized by a lock; it never touches the DB.
+
+The TOML config file is the single source of truth: the settings page
+(/settings) and the first-run wizard (/setup when no config exists) write it,
+and a ConfigWatcher picks up changes for the UI itself; running jobs load it
+anew from disk when they start.
 """
 
 from __future__ import annotations
@@ -28,8 +33,9 @@ import chess
 import chess.pgn
 
 from .analysis import OPENING_PLIES, TIME_TROUBLE_S, win_percent
-from .config import AppConfig, load_config
+from .config import AppConfig, load_config, validate_since
 from .db import connect, open_db
+from .settings import schema_json, settings_document, update_settings
 
 ASSETS_DIR = Path(__file__).parent / "assets"
 
@@ -39,7 +45,7 @@ PV_SAN_LIMIT = 8  # best-line preview length in "Ask Stockfish" answers
 LABEL_MAX_LEN = 300
 
 STEPS = {
-    "fetch": "Download all game archives from chess.com",
+    "fetch": "Download game archives from chess.com (window limits in the form)",
     "sync-parsed": "Parse stored PGNs into derived fields (usually automatic)",
     "build-opening-book": "Build the reference opening book from your own games (offline, no analysis needed)",
     "analyze": "Engine review of every game (slow; resumable; use the viewer afterwards)",
@@ -54,19 +60,136 @@ STEP_ARGS: dict[str, list[str]] = {
     "build-opening-book": ["--source", "local"],
 }
 
+# Which steps accept per-run parameters from the UI (validated in _step_args).
+STEP_PARAMS: dict[str, tuple[str, ...]] = {
+    "fetch": ("months", "since", "max_games"),
+    "analyze": ("limit", "workers"),
+}
+
 LOG_TAIL_CHARS = 8000
 
 
-class JobManager:
-    """Runs one pipeline step at a time as a subprocess; keeps the last job."""
+class ConfigWatcher:
+    """Reloads the TOML config when the file changes (or appears/ disappears).
 
-    def __init__(self, config: AppConfig, config_path: Path):
-        self._config = config
-        self._config_path = config_path
+    `get()` returns None while the file is missing — the UI then serves the
+    first-run setup wizard. A file that fails to validate keeps the last good
+    config; `error` carries the reason for the settings page.
+    """
+
+    def __init__(self, path: Path):
+        self._path = Path(path)
+        self._lock = threading.Lock()
+        self._save_lock = threading.Lock()  # serializes settings saves against each other
+        self._config: AppConfig | None = None
+        self._stamp: tuple | None = None
+        self._error: str | None = None
+        self.refresh()
+
+    def refresh(self) -> None:
+        try:
+            st = self._path.stat()
+            stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            with self._lock:
+                if self._config is not None or self._stamp is not None:
+                    self._config = None
+                    self._stamp = None
+                self._error = f"config file not found: {self._path}"
+            return
+        with self._lock:
+            if stamp == self._stamp:
+                return
+        try:
+            config = load_config(self._path)
+        except Exception as exc:  # noqa: BLE001 — a broken file must not kill the UI
+            with self._lock:
+                self._error = f"invalid config: {exc}"
+            return
+        with self._lock:
+            self._config = config
+            self._stamp = stamp
+            self._error = None
+
+    def save_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Serialize a settings save: read-merge-validate-write + reload.
+
+        The lock prevents two concurrent POSTs from discarding each other's
+        changes (lost update); the watcher reload inside the lock makes the
+        very next request see the new file.
+        """
+        with self._save_lock:
+            doc = update_settings(self._path, payload)
+            self.refresh()
+            return doc
+
+    def get(self) -> AppConfig | None:
+        """The current config, or None while it is missing."""
+        self.refresh()
+        with self._lock:
+            return self._config
+
+    @property
+    def error(self) -> str | None:
+        with self._lock:
+            return self._error
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+
+def _int_param(params: dict[str, Any], key: str, option: str, minimum: int) -> list[str]:
+    """One integer run-parameter -> CLI option, validated with a clear message."""
+    value = params.get(key)
+    if value in (None, ""):
+        return []
+    try:
+        i = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{key} must be an integer") from None
+    if i < minimum:
+        raise ValueError(f"{key} must be >= {minimum}")
+    return [option, str(i)]
+
+
+def _step_args(step: str, params: dict[str, Any] | None) -> list[str]:
+    """Validate per-run parameters and turn them into CLI arguments.
+
+    Raises ValueError with a user-presentable message on bad input.
+    """
+    args: list[str] = []
+    if not params:
+        return args
+    if step not in STEP_PARAMS:
+        raise ValueError(f"step {step!r} takes no parameters")
+    unknown = sorted(set(params) - set(STEP_PARAMS[step]))
+    if unknown:
+        raise ValueError(f"unknown parameter(s) for {step}: {', '.join(unknown)}")
+    if step == "fetch":
+        args += _int_param(params, "months", "--months", 0)
+        since = params.get("since")
+        if since:
+            args += ["--since", validate_since(str(since))]
+        args += _int_param(params, "max_games", "--max-games", 0)
+    elif step == "analyze":
+        args += _int_param(params, "limit", "--limit", 0)
+        args += _int_param(params, "workers", "--workers", 0)
+    return args
+
+
+class JobManager:
+    """Runs one pipeline step at a time as a subprocess; keeps the last job.
+
+    The config is read fresh from disk (via the watcher) when a job starts, so
+    settings saved in the web UI apply to the next run without a restart.
+    """
+
+    def __init__(self, watcher: ConfigWatcher):
+        self._watcher = watcher
         self._lock = threading.Lock()
         self._job: dict[str, Any] | None = None
-        self.logs_dir = config.db_path.parent / "logs"
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir: Path | None = None
 
     @property
     def status(self) -> dict[str, Any] | None:
@@ -83,21 +206,32 @@ class JobManager:
                 "returncode": returncode,
             }
 
-    def start(self, step: str) -> tuple[bool, str]:
+    def start(self, step: str, params: dict[str, Any] | None = None) -> tuple[bool, str]:
         if step not in STEPS:
             return False, f"unknown step: {step!r}"
+        try:
+            extra = _step_args(step, params)
+        except (ValueError, TypeError) as exc:
+            return False, f"invalid parameters: {exc}"
+        config = self._watcher.get()
+        if config is None:
+            return False, f"no valid config yet ({self._watcher.error or 'missing'}) — complete the setup first"
         with self._lock:
             current = self._job
             if current and current["proc"].poll() is None:
                 return False, f"still running: {current['step']}"
+            logs_dir = config.db_path.parent / "logs"
+            if self.logs_dir is None or self.logs_dir != logs_dir:
+                self.logs_dir = logs_dir
+                logs_dir.mkdir(parents=True, exist_ok=True)
             log_path = self.logs_dir / f"{step}.log"
             log_file = log_path.open("w", encoding="utf-8")
             proc = subprocess.Popen(
-                [sys.executable, "-m", "chess_analysis", step, *STEP_ARGS.get(step, [])],
+                [sys.executable, "-m", "chess_analysis", step, *STEP_ARGS.get(step, []), *extra],
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 env={
-                    "CHESS_ANALYSIS_CONFIG": str(self._config_path),
+                    "CHESS_ANALYSIS_CONFIG": str(self._watcher.path),
                     "PATH": "/usr/local/bin:/usr/bin:/bin",
                     "HOME": "/tmp",
                     "PYTHONUNBUFFERED": "1",
@@ -110,7 +244,7 @@ class JobManager:
                 "log_file": log_file,
                 "started_at": time.time(),
             }
-            return True, f"started: {step}"
+            return True, f"started: {step}" + (f" ({' '.join(extra)})" if extra else "")
 
     def tail(self) -> str:
         with self._lock:
@@ -154,19 +288,31 @@ def _reports(config: AppConfig) -> list[dict[str, Any]]:
     return out
 
 
-def _viewer_games(config: AppConfig) -> list[dict[str, Any]]:
-    """Analyzed games for the viewer list, newest first (read-only query)."""
+def _viewer_games(config: AppConfig, time_class: str | None = None, color: str | None = None) -> list[dict[str, Any]]:
+    """Analyzed games for the viewer list, newest first (read-only query).
+
+    Optional server-side filters: time class (bullet/blitz/rapid/daily) and color.
+    """
     conn = open_db(config.db_path)
+    clauses = ["g.parse_error IS NULL"]
+    params: list[Any] = []
+    if time_class:
+        clauses.append("g.time_class = ?")
+        params.append(time_class)
+    if color:
+        clauses.append("g.my_color = ?")
+        params.append(color)
     try:
         rows = conn.execute(
-            """
+            f"""
             SELECT g.uuid, g.end_time, g.my_color, g.opponent, g.my_result,
                    g.time_class, g.month, g.white_rating, g.black_rating,
                    a.accuracy_white, a.accuracy_black, a.blunders
             FROM games g JOIN analysis a ON a.game_uuid = g.uuid
-            WHERE g.parse_error IS NULL
+            WHERE {" AND ".join(clauses)}
             ORDER BY g.end_time DESC
-            """
+            """,
+            params,
         ).fetchall()
     finally:
         conn.close()
@@ -368,20 +514,25 @@ class EngineConsultant:
     access (the engine and its private asyncio loop are not thread-safe across
     HTTP handler threads). Answers are persisted in `engine_advice` — one
     consultation per position, invalidated on engine or budget change.
+
+    The config comes from the ConfigWatcher on every call: when the settings
+    page changes engine path, threads, hash, or budget, the shared engine is
+    respawned with the new values (and the new budget invalidates the cache).
     """
 
-    def __init__(self, config: AppConfig, engine_factory: Any = None):
-        self._config = config
+    def __init__(self, watcher: ConfigWatcher, engine_factory: Any = None):
+        self._watcher = watcher
         self._lock = threading.Lock()
         self._engine: Any = None
+        self._engine_key: tuple | None = None
         self._factory = engine_factory
 
-    def _spawn(self) -> Any:
+    def _spawn(self, config: AppConfig) -> Any:
         if self._factory is not None:
-            return self._factory(self._config.engine_path, threads=self._config.threads, hash_mb=self._config.hash_mb)
+            return self._factory(config.engine_path, threads=config.threads, hash_mb=config.hash_mb)
         from .engine import Engine
 
-        return Engine(self._config.engine_path, threads=self._config.threads, hash_mb=self._config.hash_mb)
+        return Engine(config.engine_path, threads=config.threads, hash_mb=config.hash_mb)
 
     @staticmethod
     def _format_line(board: chess.Board, info: dict) -> dict:
@@ -408,10 +559,11 @@ class EngineConsultant:
             "pv_san": pv_san,
         }
 
-    def _advice_signature(self, multipv: int) -> str:
+    @staticmethod
+    def _advice_signature(config: AppConfig, multipv: int) -> str:
         """Cache key part: budget + multipv (engine version compared separately,
         it is only known once the engine is spawned)."""
-        return f"budget={self._config.eval_ms}ms-depth={self._config.eval_depth}-multipv={multipv}"
+        return f"budget={config.eval_ms}ms-depth={config.eval_depth}-multipv={multipv}"
 
     def best_moves(self, fen: str, multipv: int) -> dict[str, Any] | None:
         """Best moves for a FEN, cached in `engine_advice` (invalidated by
@@ -422,29 +574,39 @@ class EngineConsultant:
             return None
         if not board.legal_moves:
             return {"engine": "", "game_over": True, "lines": []}
+        config = self._watcher.get()
+        if config is None:
+            return {"error": "engine unavailable: no valid config", "game_over": False, "lines": []}
         with self._lock:
             try:
-                if self._engine is None:
-                    self._engine = self._spawn()
+                engine_key = (config.engine_path, config.threads, config.hash_mb)
+                if self._engine_key != engine_key or self._engine is None:
+                    if self._engine is not None:
+                        try:
+                            self._engine.close()
+                        except Exception:  # noqa: BLE001 — engine may already be dead
+                            pass
+                    self._engine = self._spawn(config)
+                    self._engine_key = engine_key
                 engine_name = self._engine.name
-                signature = self._advice_signature(multipv)
-                cached = self._read_cache(fen, engine_name, signature)
+                signature = self._advice_signature(config, multipv)
+                cached = self._read_cache(config, fen, engine_name, signature)
                 if cached is not None:
                     return cached
                 infos = self._engine.evaluate(
-                    board, eval_ms=self._config.eval_ms, eval_depth=self._config.eval_depth, multipv=multipv
+                    board, eval_ms=config.eval_ms, eval_depth=config.eval_depth, multipv=multipv
                 )
             except (OSError, RuntimeError) as exc:
                 return {"error": f"engine unavailable: {exc}", "game_over": False, "lines": []}
             lines = [self._format_line(board, info) for info in infos if info.get("pv")]
             result = {"engine": engine_name, "game_over": False, "lines": lines}
             if lines:
-                self._write_cache(fen, engine_name, signature, multipv, result)
+                self._write_cache(config, fen, engine_name, signature, multipv, result)
             return result
 
-    def _read_cache(self, fen: str, engine_name: str, signature: str) -> dict[str, Any] | None:
+    def _read_cache(self, config: AppConfig, fen: str, engine_name: str, signature: str) -> dict[str, Any] | None:
         try:
-            conn = connect(self._config.db_path)
+            conn = connect(config.db_path)
         except sqlite3.Error:
             return None
         try:
@@ -458,9 +620,9 @@ class EngineConsultant:
         finally:
             conn.close()
 
-    def _write_cache(self, fen: str, engine_name: str, signature: str, multipv: int, result: dict) -> None:
+    def _write_cache(self, config: AppConfig, fen: str, engine_name: str, signature: str, multipv: int, result: dict) -> None:
         try:
-            conn = connect(self._config.db_path)
+            conn = connect(config.db_path)
         except sqlite3.Error:
             return
         try:
@@ -498,11 +660,16 @@ class EngineConsultant:
                 except Exception:  # noqa: BLE001 — engine may already be dead
                     pass
                 self._engine = None
+                self._engine_key = None
 
 
-def make_handler(manager: JobManager, config: AppConfig, consultant: EngineConsultant | None = None) -> type[BaseHTTPRequestHandler]:
+def make_handler(
+    watcher: ConfigWatcher,
+    manager: JobManager,
+    consultant: EngineConsultant | None = None,
+) -> type[BaseHTTPRequestHandler]:
     if consultant is None:
-        consultant = EngineConsultant(config)
+        consultant = EngineConsultant(watcher)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # silence per-request noise
@@ -519,10 +686,45 @@ def make_handler(manager: JobManager, config: AppConfig, consultant: EngineConsu
         def _json(self, payload: Any, code: int = 200) -> None:
             self._send(code, json.dumps(payload).encode("utf-8"), "application/json")
 
+        def _read_json(self) -> dict[str, Any] | None:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, json.JSONDecodeError):
+                return None
+            return payload if isinstance(payload, dict) else None
+
+        def _redirect(self, location: str) -> None:
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        # ---------------------------------------------------------------- GET
+
         def do_GET(self):
             path, _, query = self.path.partition("?")
+            config = watcher.get()
+            if config is None:
+                # first-run mode: every page is the setup wizard
+                if path == "/api/status":
+                    self._json({"setup_required": True, "config_error": watcher.error, "steps": STEPS})
+                elif path == "/api/settings":
+                    self._json({"setup_required": True, "config": settings_document(watcher.path),
+                                "config_error": watcher.error, "schema": schema_json()})
+                elif path == "/setup":
+                    self._send(200, _setup_page_bytes(), "text/html; charset=utf-8")
+                elif path.startswith("/api/"):
+                    self._json({"error": "setup required"}, code=409)
+                else:
+                    self._redirect("/setup")
+                return
             if path in ("/", "/index.html"):
                 self._send(200, _page_bytes(), "text/html; charset=utf-8")
+            elif path == "/setup":
+                self._send(200, _setup_page_bytes(), "text/html; charset=utf-8")
+            elif path == "/settings":
+                self._send(200, _settings_page_bytes(), "text/html; charset=utf-8")
             elif path == "/viewer":
                 self._send(200, _viewer_page_bytes(), "text/html; charset=utf-8")
             elif path == "/insights":
@@ -530,8 +732,11 @@ def make_handler(manager: JobManager, config: AppConfig, consultant: EngineConsu
             elif path == "/openings":
                 self._send(200, _openings_page_bytes(), "text/html; charset=utf-8")
             elif path == "/api/games":
+                qs = parse_qs(query)
+                time_class = (qs.get("time_class") or [""])[0].strip()
+                color = (qs.get("color") or [""])[0].strip()
                 try:
-                    self._json(_viewer_games(config))
+                    self._json(_viewer_games(config, time_class or None, color or None))
                 except Exception:  # noqa: BLE001 — UI must work before the first fetch
                     self._json([])
             elif path == "/api/mistakes":
@@ -578,11 +783,26 @@ def make_handler(manager: JobManager, config: AppConfig, consultant: EngineConsu
                 status = manager.status
                 self._json(
                     {
+                        "setup_required": False,
                         "job": status,
                         "log": manager.tail(),
                         "stats": _db_stats(config),
                         "reports": _reports(config),
                         "steps": STEPS,
+                        "step_params": STEP_PARAMS,
+                        "config": {
+                            "username": config.username,
+                            "default_time_class": config.ui.default_time_class,
+                        },
+                    }
+                )
+            elif path == "/api/settings":
+                self._json(
+                    {
+                        "setup_required": False,
+                        "config": settings_document(watcher.path),
+                        "config_error": watcher.error,
+                        "schema": schema_json(),
                     }
                 )
             elif path.startswith("/reports/"):
@@ -595,21 +815,48 @@ def make_handler(manager: JobManager, config: AppConfig, consultant: EngineConsu
             else:
                 self._send(404, b"not found", "text/plain")
 
+        # --------------------------------------------------------------- POST
+
         def do_POST(self):
-            if self.path.startswith("/api/run/"):
-                step = self.path[len("/api/run/"):].strip("/")
-                ok, message = manager.start(step)
-                self._json({"ok": ok, "message": message}, code=200 if ok else 409)
-            elif self.path == "/api/theme-label":
+            path, _, _ = self.path.partition("?")
+            if path == "/api/settings":
+                payload = self._read_json()
+                if payload is None:
+                    self._json({"ok": False, "error": "invalid JSON body"}, code=400)
+                    return
                 try:
-                    length = int(self.headers.get("Content-Length") or 0)
-                    payload = json.loads(self.rfile.read(length) or b"{}")
-                except (ValueError, json.JSONDecodeError):
+                    watcher.save_settings(payload)
+                except (ValueError, OSError) as exc:
+                    self._json({"ok": False, "error": str(exc)}, code=400)
+                    return
+                config = watcher.get()
+                self._json(
+                    {
+                        "ok": True,
+                        "config": settings_document(watcher.path),
+                        "setup_complete": config is not None,
+                    }
+                )
+            elif path.startswith("/api/run/"):
+                step = path[len("/api/run/"):].strip("/")
+                payload = self._read_json()
+                params = payload.get("params") if payload else None
+                if params is not None and not isinstance(params, dict):
+                    self._json({"ok": False, "error": "params must be an object"}, code=400)
+                    return
+                ok, message = manager.start(step, params)
+                self._json({"ok": ok, "message": message}, code=200 if ok else 409)
+            elif path == "/api/theme-label":
+                payload = self._read_json()
+                if payload is None:
                     self._json({"ok": False, "error": "invalid JSON body"}, code=400)
                     return
                 key = str(payload.get("key") or "").strip()
                 label = str(payload.get("label") or "").strip()
-                if not _save_theme_label(config, key, label):
+                config = watcher.get()
+                if config is None:
+                    self._json({"ok": False, "error": "no valid config"}, code=409)
+                elif not _save_theme_label(config, key, label):
                     self._json({"ok": False, "error": "invalid key or label"}, code=400)
                 else:
                     self._json({"ok": True, "key": key, "label": label})
@@ -621,6 +868,14 @@ def make_handler(manager: JobManager, config: AppConfig, consultant: EngineConsu
 
 def _page_bytes() -> bytes:
     return (ASSETS_DIR / "webui_template.html").read_bytes()
+
+
+def _setup_page_bytes() -> bytes:
+    return (ASSETS_DIR / "setup_template.html").read_bytes()
+
+
+def _settings_page_bytes() -> bytes:
+    return (ASSETS_DIR / "settings_template.html").read_bytes()
 
 
 def _viewer_page_bytes() -> bytes:
@@ -657,12 +912,20 @@ def _openings_page_bytes() -> bytes:
 
 
 def serve(host: str, port: int, config_path: Path) -> None:
-    """Start the web UI HTTP server (blocks)."""
-    config = load_config(config_path)
-    manager = JobManager(config, config_path)
-    consultant = EngineConsultant(config)
-    httpd = ThreadingHTTPServer((host, port), make_handler(manager, config, consultant))
-    print(f"chess-analysis web UI: http://{host}:{port} (config: {config_path})", flush=True)
+    """Start the web UI HTTP server (blocks).
+
+    Works without a config file: the UI then serves the first-run setup wizard
+    (Story 09) instead of crashing; once the wizard writes the config, the
+    normal pages come up without a restart.
+    """
+    watcher = ConfigWatcher(Path(config_path))
+    manager = JobManager(watcher)
+    consultant = EngineConsultant(watcher)
+    httpd = ThreadingHTTPServer((host, port), make_handler(watcher, manager, consultant))
+    if watcher.get() is None:
+        print(f"chess-analysis web UI: http://{host}:{port} — no config found, open /setup to get started", flush=True)
+    else:
+        print(f"chess-analysis web UI: http://{host}:{port} (config: {config_path})", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

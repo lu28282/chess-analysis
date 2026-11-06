@@ -437,3 +437,40 @@ def test_walk_off_at_ply_one():
     assert off_ply == 1
     assert off_side == "white"
     assert visited == []
+
+
+# ------------------------------------------------- story 12: time-class filter
+
+def test_openings_report_time_class_filter(db, config, monkeypatch):
+    _seed_report_db(db, monkeypatch)
+    # split the two games across time classes
+    db.execute("UPDATE games SET time_class = 'rapid' WHERE uuid = 'g-jobava'")
+    db.execute("UPDATE games SET time_class = 'blitz' WHERE uuid = 'g-caro'")
+    db.commit()
+
+    all_data = collect_data(db, config)
+    assert all_data["time_class"] == ""  # config default: all games
+    assert all_data["class_counts"]["jobava_london"] == 1
+    assert all_data["class_counts"]["caro_kann"] == 1
+
+    # explicit filter: only the caro game is blitz
+    data = collect_data(db, config, time_class="blitz")
+    assert data["time_class"] == "blitz"
+    assert data["class_counts"].get("caro_kann") == 1
+    assert "jobava_london" not in data["class_counts"]
+    assert data["jobava"]["games_count"] == 0
+
+    # the configured ui.default_time_class applies when no explicit filter is given
+    config.ui.default_time_class = "rapid"
+    data = collect_data(db, config)
+    assert data["time_class"] == "rapid"
+    assert data["jobava"]["games_count"] == 1
+    assert data["caro_kann"]["games_count"] == 0
+    config.ui.default_time_class = ""
+
+    # book-off marks outside the filter scope survive a filtered run
+    conn_mark = db.execute("SELECT book_off_ply FROM games WHERE uuid = 'g-jobava'").fetchone()
+    assert conn_mark["book_off_ply"] is not None  # jobava marks intact after the blitz run
+    collect_data(db, config, time_class="blitz")
+    row = db.execute("SELECT book_off_ply FROM games WHERE uuid = 'g-jobava'").fetchone()
+    assert row["book_off_ply"] == conn_mark["book_off_ply"]

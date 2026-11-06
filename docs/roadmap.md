@@ -42,14 +42,26 @@ Everything executes in containers; the host only needs Docker and a browser.
 | 4 | Stockfish analysis engine + per-blunder metadata | [`stories/04-analysis.md`](stories/04-analysis.md) | 3 |
 | 5 | Mistake-pattern report | [`stories/05-mistake-patterns.md`](stories/05-mistake-patterns.md) | 4 |
 | 6 | Opening coach — Jobava London & Caro-Kann | [`stories/06-opening-coach.md`](stories/06-opening-coach.md) | 3, 4 |
+| 7 | Multi-arch Docker image (Apple Silicon) | [`stories/07-apple-silicon.md`](stories/07-apple-silicon.md) | — |
+| 8 | Web UI settings — everything configurable in the browser | [`stories/08-web-config.md`](stories/08-web-config.md) | — |
+| 9 | First-run onboarding wizard | [`stories/09-onboarding.md`](stories/09-onboarding.md) | 8 |
+| 10 | Fetch window limits | [`stories/10-fetch-limits.md`](stories/10-fetch-limits.md) | 8 |
+| 11 | Analysis throughput & progress | [`stories/11-analysis-ux.md`](stories/11-analysis-ux.md) | 8 |
+| 12 | Filter by game mode (time class) | [`stories/12-time-class-filter.md`](stories/12-time-class-filter.md) | 8 |
 
 ## Dependency order
 
 ```
 Story 2 (fetcher) → Story 3 (ingestion) → Story 4 (analysis) ─┬→ Story 5 (mistake patterns)
-                                                             └→ Story 6 (opening coach)
+                                                              └→ Story 6 (opening coach)
+
+Story 7 (multi-arch image)  — independent
+Story 8 (web config) ─┬→ Story 9 (onboarding wizard)
+                      ├→ Story 10 (fetch limits)
+                      ├→ Story 11 (analysis UX)
+                      └→ Story 12 (time-class filter)
 ```
 
-Stories 2+3 can ship in one PR (schema needed at fetch time anyway).
-Story 4 needs a local Stockfish install and produces the per-blunder metadata both reports aggregate.
-Stories 5 and 6 are independent of each other; Story 6 additionally builds a reference opening book from free lichess data (one-time, then offline).
+Stories 2+3 shipped in one PR; stories 7–12 came out of first user feedback
+(a Mac user's setup struggles and feature wishes) — see the story files for
+the original quotes.

@@ -203,14 +203,22 @@ function render() {
 }
 
 document.getElementById('f-color').addEventListener('change', render);
-document.getElementById('f-tc').addEventListener('change', render);
-// time-class options derived from the data
+const tcSel = document.getElementById('f-tc');
+tcSel.addEventListener('change', render);
+// time-class options derived from the data (the static list covers the four
+// chess.com classes; this adds anything else present in the data, no dupes)
 (function() {
-  const sel = document.getElementById('f-tc');
-  [...new Set(DATA.blunders.concat(DATA.games).map(x => x.time_class))].filter(Boolean).sort().forEach(tc => {
-    sel.insertAdjacentHTML('beforeend', '<option value="' + escAttr(tc) + '">' + esc(tc) + '</option>');
-  });
+  const have = new Set([...tcSel.options].map(o => o.value));
+  [...new Set(DATA.blunders.concat(DATA.games).map(x => x.time_class))]
+    .filter(Boolean).filter(tc => !have.has(tc)).sort().forEach(tc => {
+      tcSel.insertAdjacentHTML('beforeend', '<option value="' + escAttr(tc) + '">' + esc(tc) + '</option>');
+      have.add(tc);
+    });
 })();
+// preselect the default time-class filter from the settings (ui.default_time_class)
+if (DATA.default_time_class && [...tcSel.options].some(o => o.value === DATA.default_time_class)) {
+  tcSel.value = DATA.default_time_class;
+}
 render();
 </script>
 </body>

@@ -52,6 +52,71 @@ def test_fetch_all_months_and_games(db, config, monkeypatch):
     assert row["rating_delta"] == -100
 
 
+# ------------------------------------------------------------- story 10: window
+
+ARCHIVES_3 = [
+    "https://api.chess.com/pub/player/testuser/games/2024/02",
+    "https://api.chess.com/pub/player/testuser/games/2024/03",
+    "https://api.chess.com/pub/player/testuser/games/2024/04",
+]
+
+
+def test_select_archives_window():
+    from chess_analysis.pipeline import select_archives
+
+    assert select_archives(ARCHIVES_3, months=0, since="") == ARCHIVES_3
+    assert select_archives(ARCHIVES_3, months=2, since="") == ARCHIVES_3[-2:]
+    assert select_archives(ARCHIVES_3, months=1, since="") == ARCHIVES_3[-1:]
+    # a YYYY-MM-DD bound collapses to its month
+    assert select_archives(ARCHIVES_3, months=0, since="2024-03-15") == ARCHIVES_3[1:]
+    assert select_archives(ARCHIVES_3, months=0, since="2024-03") == ARCHIVES_3[1:]
+    assert select_archives(ARCHIVES_3, months=0, since="2025-01") == []
+
+
+def test_fetch_months_limit_skips_old_archives(db, config, monkeypatch):
+    """--months 1 fetches only the newest archive even if older ones exist."""
+    responses = [
+        FakeResponse(200, {"archives": ARCHIVES_3}),
+        FakeResponse(200, {"games": [make_archive_game("uuid-new")]}),
+    ]
+    _patch_session(monkeypatch, responses)
+    stats = run_fetch(db, config, months=1)
+    assert stats.months_seen == 1
+    assert stats.months_fetched == 1
+    assert stats.games_stored == 1
+    # only the newest month was requested
+    assert db.execute("SELECT month FROM games").fetchone()["month"] == "2024/04"
+
+
+def test_fetch_since_bound_from_config(db, config, monkeypatch):
+    config.fetch.since = "2024-03"
+    responses = [
+        FakeResponse(200, {"archives": ARCHIVES_3}),
+        FakeResponse(200, {"games": [make_archive_game("uuid-m3")]}),
+        FakeResponse(200, {"games": [make_archive_game("uuid-m4")]}),
+    ]
+    _patch_session(monkeypatch, responses)
+    stats = run_fetch(db, config)
+    assert stats.months_seen == 2
+    assert stats.games_stored == 2
+
+
+def test_fetch_max_games_stops_walk(db, config, monkeypatch):
+    """--max-games stops the archive walk once enough games were stored."""
+    games = [make_archive_game(f"uuid-{i}") for i in range(3)]
+    responses = [
+        FakeResponse(200, {"archives": ARCHIVES_3}),
+        FakeResponse(200, {"games": [games[0]]}),
+        # 2024/03 would be next, but max_games=1 is already reached
+    ]
+    _patch_session(monkeypatch, responses)
+    stats = run_fetch(db, config, max_games=1)
+    assert stats.games_stored == 1
+    assert stats.months_fetched == 1
+    months = [r[0] for r in db.execute("SELECT DISTINCT month FROM games")]
+    assert months == ["2024/02"]
+
+
 def test_refetch_with_304_stores_nothing(db, config, monkeypatch):
     responses = [
         FakeResponse(200, {"archives": [MONTH_URL]}),

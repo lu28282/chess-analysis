@@ -255,8 +255,15 @@ def _section(opening: str, label: str, description: str, per_game: list[dict], b
     }
 
 
-def collect_data(conn: sqlite3.Connection, config: AppConfig) -> dict[str, Any]:
-    """Aggregate opening classification + book-leaving + analysis into report data."""
+def collect_data(conn: sqlite3.Connection, config: AppConfig, time_class: str | None = None) -> dict[str, Any]:
+    """Aggregate opening-coach data for one report run.
+
+    `time_class` (bullet/blitz/rapid/daily) restricts the report to one game
+    mode — None falls back to the configured UI default ("" = all games):
+    opening mistakes in 2-minute games differ from 10-minute games.
+    """
+    if time_class is None:
+        time_class = config.ui.default_time_class
     books = {
         "jobava_london": load_book(conn, "jobava_london"),
         "caro_kann": load_book(conn, "caro_kann"),
@@ -275,17 +282,24 @@ def collect_data(conn: sqlite3.Connection, config: AppConfig) -> dict[str, Any]:
     include_gaps = book_source != "local"
     book_max_ply = config.explorer.max_ply
 
-    rows = conn.execute(
-        """
+    rows_query = """
         SELECT g.uuid, g.pgn, g.my_color, g.my_result, g.opening_class, g.variation_key,
                g.time_class,
                a.accuracy_white, a.accuracy_black, a.moves
         FROM games g LEFT JOIN analysis a ON a.game_uuid = g.uuid
         WHERE g.parse_error IS NULL AND g.opening_class IS NOT NULL AND g.rules = 'chess'
-        """
-    ).fetchall()
-    # clear stale book-off marks: recomputed below for every walkable game
-    conn.execute("UPDATE games SET book_off_ply = NULL, book_off_side = NULL WHERE book_off_ply IS NOT NULL")
+    """
+    params: tuple = ()
+    if time_class:
+        rows_query += " AND g.time_class = ?"
+        params = (time_class,)
+    rows = conn.execute(rows_query, params).fetchall()
+    # clear stale book-off marks: recomputed below for every walkable game in
+    # the filter scope (unfiltered games keep their existing marks)
+    clear_sql = "UPDATE games SET book_off_ply = NULL, book_off_side = NULL WHERE book_off_ply IS NOT NULL"
+    if time_class:
+        clear_sql += " AND time_class = ?"
+    conn.execute(clear_sql, params)
 
     for r in rows:
         opening = r["opening_class"]
@@ -338,6 +352,7 @@ def collect_data(conn: sqlite3.Connection, config: AppConfig) -> dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "username": config.username,
         "book_source": book_source,
+        "time_class": time_class,
         "class_counts": dict(class_counts),
         "jobava": _section(
             "jobava_london", "Jobava London (White)",
@@ -358,8 +373,13 @@ def collect_data(conn: sqlite3.Connection, config: AppConfig) -> dict[str, Any]:
     }
 
 
-def generate_report(conn: sqlite3.Connection, config: AppConfig, output: Path | None = None) -> Path:
-    data = collect_data(conn, config)
+def generate_report(
+    conn: sqlite3.Connection,
+    config: AppConfig,
+    output: Path | None = None,
+    time_class: str | None = None,
+) -> Path:
+    data = collect_data(conn, config, time_class=time_class)
     out = Path(output) if output else config.reports_dir / "openings.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     template = (ASSETS_DIR / "openings_report_template.html").read_text(encoding="utf-8")

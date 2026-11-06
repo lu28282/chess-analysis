@@ -347,6 +347,12 @@ async function init() {
   [...new Set(DATA.mistakes.map(m => m.time_class).concat(GAMES.map(g => g.time_class)))]
     .filter(Boolean).sort().forEach(tc =>
       tcSel.insertAdjacentHTML('beforeend', '<option value="' + escAttr(tc) + '">' + esc(tc) + '</option>'));
+  // preselect the default time-class filter from the settings (ui.default_time_class)
+  try {
+    const s = await (await fetch('/api/status')).json();
+    const def = s.config && s.config.default_time_class;
+    if (def && [...tcSel.options].some(o => o.value === def)) tcSel.value = def;
+  } catch (e) { /* cosmetic default only */ }
   document.getElementById('f-color').addEventListener('change', render);
   tcSel.addEventListener('change', render);
   if (!DATA.mistakes.length) {

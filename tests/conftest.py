@@ -23,6 +23,7 @@ def config(tmp_path) -> AppConfig:
         multipv=1,
         threads=1,
         hash_mb=16,
+        workers=1,  # deterministic sequential analyze in tests (0 would mean auto-parallel)
         thresholds=Thresholds(brilliant=0.0, best=0.6, good=5.0, inaccuracy=10.0, mistake=20.0, blunder=40.0),
         explorer=ExplorerConfig(endpoint="https://explorer.lichess.ovh/lichess", max_ply=12, min_games=20, top_moves=12, delay_ms=0, max_positions=600),
         opening=OpeningConfig(jobava_max_setup_ply=12, caro_kann_max_ply=12),
